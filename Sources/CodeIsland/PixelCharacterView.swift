@@ -7,6 +7,7 @@ struct ClawdView: View {
     let status: AgentStatus
     var size: CGFloat = 27
     @State private var alive = false
+    @Environment(\.mascotSpeed) private var speed
 
     // Colors from clawd-on-desk
     private static let bodyC  = Color(red: 0.871, green: 0.533, blue: 0.427) // #DE886D
@@ -110,12 +111,12 @@ struct ClawdView: View {
         ZStack {
             // Character body (behind)
             TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
-                sleepCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+                sleepCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
 
             // Z's — continuous float-up loop, staggered timing
             TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
-                let t = ctx.date.timeIntervalSinceReferenceDate
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
                 floatingZs(t: t)
             }
         }
@@ -161,7 +162,7 @@ struct ClawdView: View {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     private var workScene: some View {
         TimelineView(.periodic(from: .now, by: 0.03)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
+            let t = timeline.date.timeIntervalSinceReferenceDate * speed
             workCanvas(t: t)
         }
     }
@@ -264,7 +265,7 @@ struct ClawdView: View {
                 .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: alive)
 
             TimelineView(.periodic(from: .now, by: 0.03)) { ctx in
-                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
         }
     }

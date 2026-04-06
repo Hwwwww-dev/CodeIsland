@@ -7,6 +7,7 @@ struct DroidView: View {
     let status: AgentStatus
     var size: CGFloat = 27
     @State private var alive = false
+    @Environment(\.mascotSpeed) private var speed
 
     // Factory brand palette — warm industrial
     private static let bodyC   = Color(red: 0.835, green: 0.416, blue: 0.149) // #D56A26 rust orange
@@ -124,10 +125,10 @@ struct DroidView: View {
     private var sleepScene: some View {
         ZStack {
             TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
-                sleepCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+                sleepCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
             TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
-                floatingZs(t: ctx.date.timeIntervalSinceReferenceDate)
+                floatingZs(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
         }
     }
@@ -173,7 +174,7 @@ struct DroidView: View {
     // ━━━━━━ WORK ━━━━━━
     private var workScene: some View {
         TimelineView(.periodic(from: .now, by: 0.03)) { ctx in
-            workCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+            workCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
         }
     }
 
@@ -221,7 +222,7 @@ struct DroidView: View {
                 .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: alive)
 
             TimelineView(.periodic(from: .now, by: 0.03)) { ctx in
-                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
         }
     }

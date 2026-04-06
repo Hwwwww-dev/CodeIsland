@@ -7,6 +7,7 @@ struct BuddyView: View {
     let status: AgentStatus
     var size: CGFloat = 27
     @State private var alive = false
+    @Environment(\.mascotSpeed) private var speed
 
     // CodeBuddy brand palette
     private static let bodyC   = Color(red: 0.424, green: 0.302, blue: 1.0)   // #6C4DFF purple
@@ -150,10 +151,10 @@ struct BuddyView: View {
     private var sleepScene: some View {
         ZStack {
             TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
-                sleepCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+                sleepCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
             TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
-                floatingZs(t: ctx.date.timeIntervalSinceReferenceDate)
+                floatingZs(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
         }
     }
@@ -194,7 +195,7 @@ struct BuddyView: View {
     // ━━━━━━ WORK ━━━━━━
     private var workScene: some View {
         TimelineView(.periodic(from: .now, by: 0.03)) { ctx in
-            workCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+            workCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
         }
     }
 
@@ -242,7 +243,7 @@ struct BuddyView: View {
                 .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: alive)
 
             TimelineView(.periodic(from: .now, by: 0.03)) { ctx in
-                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
         }
     }

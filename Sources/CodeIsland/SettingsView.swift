@@ -552,6 +552,7 @@ private struct AppearancePreview: View {
 private struct MascotsPage: View {
     @ObservedObject private var l10n = L10n.shared
     @State private var previewStatus: AgentStatus = .processing
+    @AppStorage(SettingsKey.mascotSpeed) private var mascotSpeed = SettingsDefaults.mascotSpeed
 
     private let mascotList: [(name: String, source: String, desc: String, color: Color)] = [
         ("Clawd", "claude", "Claude Code", Color(red: 0.871, green: 0.533, blue: 0.427)),
@@ -573,6 +574,18 @@ private struct MascotsPage: View {
                     Text(l10n["waiting_approval"]).tag(AgentStatus.waitingApproval)
                 }
                 .pickerStyle(.segmented)
+
+                HStack {
+                    Text(l10n["mascot_speed"])
+                    Spacer()
+                    Text(String(format: "%.1f×", Double(mascotSpeed) / 100.0))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(value: Binding(
+                    get: { Double(mascotSpeed) },
+                    set: { mascotSpeed = Int($0) }
+                ), in: 25...300, step: 25)
             }
 
             Section {

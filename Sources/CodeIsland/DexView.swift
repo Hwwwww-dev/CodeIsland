@@ -7,6 +7,7 @@ struct DexView: View {
     let status: AgentStatus
     var size: CGFloat = 27
     @State private var alive = false
+    @Environment(\.mascotSpeed) private var speed
 
     // OpenAI black & white palette — white body, black prompt
     private static let cloudC    = Color(red: 0.92, green: 0.92, blue: 0.93) // off-white
@@ -135,11 +136,11 @@ struct DexView: View {
     private var sleepScene: some View {
         ZStack {
             TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
-                let t = ctx.date.timeIntervalSinceReferenceDate
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
                 sleepCanvas(t: t)
             }
             TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
-                let t = ctx.date.timeIntervalSinceReferenceDate
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
                 floatingZs(t: t)
             }
         }
@@ -190,7 +191,7 @@ struct DexView: View {
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     private var workScene: some View {
         TimelineView(.periodic(from: .now, by: 0.03)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
+            let t = timeline.date.timeIntervalSinceReferenceDate * speed
             workCanvas(t: t)
         }
     }
@@ -249,7 +250,7 @@ struct DexView: View {
                 .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: alive)
 
             TimelineView(.periodic(from: .now, by: 0.03)) { ctx in
-                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
         }
     }

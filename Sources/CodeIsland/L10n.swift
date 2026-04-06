@@ -95,6 +95,11 @@ final class L10n: ObservableObject {
         "processing": "Processing",
         "idle": "Idle",
         "waiting_approval": "Waiting Approval",
+        "mascot_speed": "Animation Speed",
+        "speed_slow": "0.5× Slow",
+        "speed_normal": "1× Normal",
+        "speed_fast": "1.5× Fast",
+        "speed_very_fast": "2× Very Fast",
 
         // Sound
         "enable_sound": "Enable Sound Effects",
@@ -237,6 +242,11 @@ final class L10n: ObservableObject {
         "processing": "工作中",
         "idle": "空闲",
         "waiting_approval": "等待审批",
+        "mascot_speed": "动画速度",
+        "speed_slow": "0.5× 慢速",
+        "speed_normal": "1× 正常",
+        "speed_fast": "1.5× 快速",
+        "speed_very_fast": "2× 极速",
 
         // Sound
         "enable_sound": "启用音效",

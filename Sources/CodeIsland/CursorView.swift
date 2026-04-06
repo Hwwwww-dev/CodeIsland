@@ -8,6 +8,7 @@ struct CursorView: View {
     let status: AgentStatus
     var size: CGFloat = 27
     @State private var alive = false
+    @Environment(\.mascotSpeed) private var speed
 
     // Cursor brand palette
     private static let darkC   = Color(red: 0.08, green: 0.07, blue: 0.04)  // #14120B
@@ -152,10 +153,10 @@ struct CursorView: View {
     private var sleepScene: some View {
         ZStack {
             TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
-                sleepCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+                sleepCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
             TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
-                floatingZs(t: ctx.date.timeIntervalSinceReferenceDate)
+                floatingZs(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
         }
     }
@@ -195,7 +196,7 @@ struct CursorView: View {
     // ━━━━━━ WORK ━━━━━━
     private var workScene: some View {
         TimelineView(.periodic(from: .now, by: 0.03)) { ctx in
-            workCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+            workCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
         }
     }
 
@@ -244,7 +245,7 @@ struct CursorView: View {
                 .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: alive)
 
             TimelineView(.periodic(from: .now, by: 0.03)) { ctx in
-                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate)
+                alertCanvas(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
         }
     }

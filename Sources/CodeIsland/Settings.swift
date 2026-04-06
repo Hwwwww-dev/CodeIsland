@@ -36,6 +36,9 @@ enum SettingsKey {
     // Advanced
     static let maxToolHistory = "maxToolHistory"
 
+    // Mascot
+    static let mascotSpeed = "mascotSpeed"
+
     // Session grouping
     static let sessionGroupingMode = "sessionGroupingMode"
 
@@ -65,6 +68,8 @@ struct SettingsDefaults {
     static let soundBoot = true
 
     static let maxToolHistory = 20
+
+    static let mascotSpeed = 100  // percentage: 50–200
 
     static let sessionGroupingMode = "all"
 }
@@ -97,6 +102,7 @@ class SettingsManager {
             SettingsKey.soundPromptSubmit: SettingsDefaults.soundPromptSubmit,
             SettingsKey.soundBoot: SettingsDefaults.soundBoot,
             SettingsKey.maxToolHistory: SettingsDefaults.maxToolHistory,
+            SettingsKey.mascotSpeed: SettingsDefaults.mascotSpeed,
             SettingsKey.sessionGroupingMode: SettingsDefaults.sessionGroupingMode,
         ])
     }

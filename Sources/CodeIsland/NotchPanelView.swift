@@ -1592,20 +1592,38 @@ private struct SessionTag: View {
 private struct TypingIndicator: View {
     let fontSize: CGFloat
     var label: String? = nil
+    @State private var phase: CGFloat = -60
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
-            let on = Int(ctx.date.timeIntervalSinceReferenceDate / 0.5) % 2 == 0
-            HStack(spacing: 0) {
-                if let label {
-                    Text(label)
-                        .font(.system(size: fontSize, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.5))
+        if let label {
+            Text(label)
+                .font(.system(size: fontSize, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.35))
+                .overlay(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .white.opacity(0.3), location: 0.4),
+                            .init(color: .white.opacity(0.5), location: 0.5),
+                            .init(color: .white.opacity(0.3), location: 0.6),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: 60)
+                    .offset(x: phase)
+                    .mask(
+                        Text(label)
+                            .font(.system(size: fontSize, design: .monospaced))
+                    )
+                )
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 2.5).repeatForever(autoreverses: false)) {
+                        phase = 80
+                    }
                 }
-                Text("_")
-                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(on ? 0.8 : 0.2))
-            }
+                .onDisappear { phase = -60 }
         }
     }
 }
