@@ -1,6 +1,17 @@
 import Foundation
 
 public struct SessionSnapshot {
+    public static let supportedSources: Set<String> = [
+        "claude",
+        "codex",
+        "gemini",
+        "cursor",
+        "qoder",
+        "droid",
+        "codebuddy",
+        "opencode",
+    ]
+
     public var status: AgentStatus = .idle
     public var currentTool: String?
     public var toolDescription: String?
@@ -31,6 +42,13 @@ public struct SessionSnapshot {
 
     public init(startTime: Date = Date()) {
         self.startTime = startTime
+    }
+
+    public static func normalizedSupportedSource(_ source: String?) -> String? {
+        guard let source else { return nil }
+        let normalized = source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty, supportedSources.contains(normalized) else { return nil }
+        return normalized
     }
 
     public var activeSubagentCount: Int {
@@ -377,7 +395,7 @@ public func reduceEvent(
         if let ppid = event.rawJSON["_ppid"] as? Int, ppid > 0 {
             sessions[sessionId]?.cliPid = pid_t(ppid)
         }
-        if let source = event.rawJSON["_source"] as? String, !source.isEmpty {
+        if let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) {
             sessions[sessionId]?.source = source
         }
         if let app = event.rawJSON["_term_app"] as? String, !app.isEmpty { sessions[sessionId]?.termApp = app }
@@ -511,7 +529,7 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
     if let ppid = event.rawJSON["_ppid"] as? Int, ppid > 0 {
         sessions[sessionId]?.cliPid = pid_t(ppid)
     }
-    if let source = event.rawJSON["_source"] as? String, !source.isEmpty {
+    if let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) {
         sessions[sessionId]?.source = source
     }
 }

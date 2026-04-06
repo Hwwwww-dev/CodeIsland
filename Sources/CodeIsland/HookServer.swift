@@ -100,6 +100,12 @@ class HookServer {
             return
         }
 
+        if let rawSource = event.rawJSON["_source"] as? String,
+           SessionSnapshot.normalizedSupportedSource(rawSource) == nil {
+            sendResponse(connection: connection, data: Data("{}".utf8))
+            return
+        }
+
         if event.eventName == "PermissionRequest" {
             let sessionId = event.sessionId ?? "default"
             // AskUserQuestion is a question, not a permission — route to QuestionBar
