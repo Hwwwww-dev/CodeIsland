@@ -91,11 +91,13 @@ public struct ChatMessage: Identifiable {
 public struct QuestionPayload {
     public let question: String
     public let options: [String]?
+    public let descriptions: [String]?
     public let header: String?
 
-    public init(question: String, options: [String]?, header: String? = nil) {
+    public init(question: String, options: [String]?, descriptions: [String]? = nil, header: String? = nil) {
         self.question = question
         self.options = options
+        self.descriptions = descriptions
         self.header = header
     }
 
@@ -105,9 +107,8 @@ public struct QuestionPayload {
             let options = event.rawJSON["options"] as? [String]
             return QuestionPayload(question: question, options: options)
         }
-        if let msg = event.rawJSON["message"] as? String, msg.contains("?") {
-            return QuestionPayload(question: msg, options: nil)
-        }
+        // Don't use "?" heuristic — normal status text like "Should I update tests?"
+        // would be misclassified as a blocking question, stalling the hook.
         return nil
     }
 }

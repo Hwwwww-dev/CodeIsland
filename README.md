@@ -32,8 +32,9 @@ It connects to **8 AI coding tools** via Unix socket IPC, displaying session sta
 - **Question answering** — Respond to agent questions without leaving your current app
 - **Pixel-art mascots** — Each AI tool has its own animated character
 - **One-click jump** — Click a session to jump to its terminal tab or IDE window
+- **Smart suppress** — Tab-level terminal detection: only suppresses notifications when you're looking at the specific session tab, not just the terminal app
 - **Sound effects** — Optional 8-bit sound notifications for session events
-- **Auto hook install** — Automatically configures hooks for all detected CLI tools
+- **Auto hook install** — Automatically configures hooks for all detected CLI tools, with auto-repair and version tracking
 - **Bilingual UI** — English and Chinese, auto-detects system language
 - **Multi-display** — Works with external monitors, auto-detects notch displays
 
@@ -70,7 +71,7 @@ git clone https://github.com/wxtsky/CodeIsland.git
 cd CodeIsland
 
 # Development (debug build + launch)
-./dev.sh
+swift build && open .build/debug/CodeIsland.app
 
 # Release (universal binary: Apple Silicon + Intel)
 ./build.sh
@@ -112,6 +113,16 @@ CodeIsland provides a 7-tab settings panel:
 ## Acknowledgments
 
 This project was inspired by [claude-island](https://github.com/farouqaldori/claude-island) by [@farouqaldori](https://github.com/farouqaldori). Thanks for the original idea of bringing AI agent status into the macOS notch.
+
+## Star History
+
+<a href="https://star-history.com/#wxtsky/CodeIsland&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=wxtsky/CodeIsland&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=wxtsky/CodeIsland&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=wxtsky/CodeIsland&type=Date" />
+ </picture>
+</a>
 
 ## License
 

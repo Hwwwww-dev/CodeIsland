@@ -24,7 +24,8 @@ let package = Package(
         ),
         .testTarget(
             name: "CodeIslandCoreTests",
-            dependencies: ["CodeIslandCore"]
+            dependencies: ["CodeIslandCore"],
+            path: "Tests/CodeIslandCoreTests"
         ),
     ]
 )

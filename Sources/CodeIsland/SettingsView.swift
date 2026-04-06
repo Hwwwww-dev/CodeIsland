@@ -1010,23 +1010,24 @@ struct AppLogoView: View {
 
     var body: some View {
         Canvas { ctx, sz in
-            let px = sz.width / 16
+            // macOS icon standard: ~10% padding on each side
+            let inset = sz.width * 0.1
+            let contentRect = CGRect(x: inset, y: inset, width: sz.width - inset * 2, height: sz.height - inset * 2)
+            let px = contentRect.width / 16
             if showBackground {
-                let bgRect = CGRect(origin: .zero, size: sz)
-                let bgPath = Path(roundedRect: bgRect, cornerRadius: sz.width * 0.22, style: .continuous)
+                let bgPath = Path(roundedRect: contentRect, cornerRadius: contentRect.width * 0.22, style: .continuous)
                 ctx.fill(bgPath, with: .color(.white))
-                ctx.stroke(bgPath, with: .color(.black.opacity(0.08)), lineWidth: 1)
             }
             // Notch pill
             let pillColor = showBackground ? Color(white: 0.1) : Color(white: 0.5)
-            let pillRect = CGRect(x: px * 3, y: px * 6, width: px * 10, height: px * 4)
+            let pillRect = CGRect(x: contentRect.minX + px * 3, y: contentRect.minY + px * 6, width: px * 10, height: px * 4)
             ctx.fill(Path(roundedRect: pillRect, cornerRadius: px * 2, style: .continuous), with: .color(pillColor))
             // Eyes
-            ctx.fill(Path(CGRect(x: px * 5, y: px * 7, width: px * 2, height: px * 2)), with: .color(orange))
-            ctx.fill(Path(CGRect(x: px * 9, y: px * 7, width: px * 2, height: px * 2)), with: .color(orange))
+            ctx.fill(Path(CGRect(x: contentRect.minX + px * 5, y: contentRect.minY + px * 7, width: px * 2, height: px * 2)), with: .color(orange))
+            ctx.fill(Path(CGRect(x: contentRect.minX + px * 9, y: contentRect.minY + px * 7, width: px * 2, height: px * 2)), with: .color(orange))
             // Pupils
-            ctx.fill(Path(CGRect(x: px * 6, y: px * 7, width: px, height: px)), with: .color(.white))
-            ctx.fill(Path(CGRect(x: px * 10, y: px * 7, width: px, height: px)), with: .color(.white))
+            ctx.fill(Path(CGRect(x: contentRect.minX + px * 6, y: contentRect.minY + px * 7, width: px, height: px)), with: .color(.white))
+            ctx.fill(Path(CGRect(x: contentRect.minX + px * 10, y: contentRect.minY + px * 7, width: px, height: px)), with: .color(.white))
         }
         .frame(width: size, height: size)
         .shadow(color: .black.opacity(showBackground ? 0.15 : 0), radius: size * 0.12, y: size * 0.04)

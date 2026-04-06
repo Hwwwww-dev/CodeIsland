@@ -159,10 +159,13 @@ struct ConfigInstaller {
         allCLIs.filter { $0.source != "claude" }
     }
 
+    /// Hook script version — bump this when the script template changes
+    private static let hookScriptVersion = 2
+
     /// Hook script for Claude Code (dispatcher: bridge binary → nc fallback)
     private static let hookScript = """
         #!/bin/bash
-        # CodeIsland hook — native bridge with shell fallback
+        # CodeIsland hook v\(hookScriptVersion) — native bridge with shell fallback
         BRIDGE="$HOME/.claude/hooks/codeisland-bridge"
         [ -x "$BRIDGE" ] && exec "$BRIDGE"
         # Fallback: original shell approach (no binary installed yet)
@@ -170,7 +173,7 @@ struct ConfigInstaller {
         [ -S "$SOCK" ] || exit 0
         INPUT=$(cat)
         _ITERM_GUID="${ITERM_SESSION_ID##*:}"
-        TERM_INFO="\\"_term_app\\":\\"${TERM_PROGRAM:-}\\",\\"_iterm_session\\":\\"${_ITERM_GUID:-}\\",\\"_tty\\":\\"$(tty 2>/dev/null || true)\\""
+        TERM_INFO="\\"_term_app\\":\\"${TERM_PROGRAM:-}\\",\\"_iterm_session\\":\\"${_ITERM_GUID:-}\\",\\"_tty\\":\\"$(tty 2>/dev/null || true)\\",\\"_ppid\\":$PPID"
         PATCHED="${INPUT%\\}},${TERM_INFO}}"
         if echo "$INPUT" | grep -q '"PermissionRequest"'; then
           echo "$PATCHED" | nc -U -w 120 "$SOCK" 2>/dev/null || true
@@ -493,13 +496,15 @@ struct ConfigInstaller {
     private static func isHooksInstalled(for cli: CLIConfig, fm: FileManager) -> Bool {
         guard let root = parseJSONFile(at: cli.fullPath, fm: fm),
               let hooks = root[cli.configKey] as? [String: Any] else { return false }
-        let hasHook = hooks.values.contains { value in
-            guard let entries = value as? [[String: Any]] else { return false }
+        // Check that ALL required events have our hook installed, not just any one
+        let allPresent = cli.events.allSatisfy { (event, _, _) in
+            guard let entries = hooks[event] as? [[String: Any]] else { return false }
             return entries.contains { containsOurHook($0) }
         }
+        guard allPresent else { return false }
         // Also check for stale "async" keys that need cleanup
-        if hasHook && hasStaleAsyncKey(hooks) { return false }
-        return hasHook
+        if hasStaleAsyncKey(hooks) { return false }
+        return true
     }
 
     /// Detect legacy hook entries with invalid "async" key
@@ -537,7 +542,9 @@ struct ConfigInstaller {
         if fm.fileExists(atPath: hookScriptPath) {
             if let existing = fm.contents(atPath: hookScriptPath),
                let str = String(data: existing, encoding: .utf8) {
-                needsUpdate = !str.contains("codeisland-bridge")
+                // Update if script doesn't contain bridge dispatcher OR version is outdated
+                let hasCurrentVersion = str.contains("# CodeIsland hook v\(hookScriptVersion)")
+                needsUpdate = !hasCurrentVersion
             } else {
                 needsUpdate = true
             }
@@ -558,11 +565,18 @@ struct ConfigInstaller {
         if !fm.fileExists(atPath: srcPath) { srcPath = execDir + "/codeisland-bridge" }
         guard fm.fileExists(atPath: srcPath) else { return }
 
-        try? fm.removeItem(atPath: bridgePath)
+        // Atomic replace: copy to temp file first, then rename (overwrites atomically)
+        let tmpPath = bridgePath + ".tmp.\(ProcessInfo.processInfo.processIdentifier)"
         do {
-            try fm.copyItem(atPath: srcPath, toPath: bridgePath)
+            try? fm.removeItem(atPath: tmpPath)
+            try fm.copyItem(atPath: srcPath, toPath: tmpPath)
+            chmod(tmpPath, 0o755)
+            _ = try fm.replaceItemAt(URL(fileURLWithPath: bridgePath), withItemAt: URL(fileURLWithPath: tmpPath))
+        } catch {
+            // replaceItemAt fails if destination doesn't exist yet — fall back to rename
+            try? fm.moveItem(atPath: tmpPath, toPath: bridgePath)
             chmod(bridgePath, 0o755)
-        } catch {}
+        }
     }
 
     // MARK: - OpenCode Plugin
@@ -624,11 +638,20 @@ struct ConfigInstaller {
         }
     }
 
+    /// Current OpenCode plugin version — bump when codeisland-opencode.js changes
+    private static let opencodePluginVersion = "v2"
+
     private static func isOpencodePluginInstalled(fm: FileManager) -> Bool {
         guard fm.fileExists(atPath: opencodePluginPath),
               let data = fm.contents(atPath: opencodeConfigPath),
               let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let plugins = config["plugin"] as? [String] else { return false }
-        return plugins.contains { $0.contains("codeisland") }
+        guard plugins.contains(where: { $0.contains("codeisland") }) else { return false }
+        // Check version: if installed plugin is outdated, report as not installed to trigger update
+        if let existing = fm.contents(atPath: opencodePluginPath),
+           let str = String(data: existing, encoding: .utf8) {
+            return str.contains("// version: \(opencodePluginVersion)")
+        }
+        return false
     }
 }

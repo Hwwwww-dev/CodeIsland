@@ -101,8 +101,10 @@ class HookServer {
         }
 
         if event.eventName == "PermissionRequest" {
+            let sessionId = event.sessionId ?? "default"
             // AskUserQuestion is a question, not a permission — route to QuestionBar
             if event.toolName == "AskUserQuestion" {
+                monitorPeerDisconnect(connection: connection, sessionId: sessionId)
                 Task {
                     let responseBody = await withCheckedContinuation { continuation in
                         appState.handleAskUserQuestion(event, continuation: continuation)
@@ -111,6 +113,7 @@ class HookServer {
                 }
                 return
             }
+            monitorPeerDisconnect(connection: connection, sessionId: sessionId)
             Task {
                 let responseBody = await withCheckedContinuation { continuation in
                     appState.handlePermissionRequest(event, continuation: continuation)
@@ -119,6 +122,8 @@ class HookServer {
             }
         } else if EventNormalizer.normalize(event.eventName) == "Notification",
                   QuestionPayload.from(event: event) != nil {
+            let questionSessionId = event.sessionId ?? "default"
+            monitorPeerDisconnect(connection: connection, sessionId: questionSessionId)
             Task {
                 let responseBody = await withCheckedContinuation { continuation in
                     appState.handleQuestion(event, continuation: continuation)
@@ -128,6 +133,18 @@ class HookServer {
         } else {
             appState.handleEvent(event)
             sendResponse(connection: connection, data: Data("{}".utf8))
+        }
+    }
+
+    /// Watch for bridge process disconnect — indicates user answered in terminal
+    private func monitorPeerDisconnect(connection: NWConnection, sessionId: String) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] _, _, isComplete, error in
+            Task { @MainActor in
+                guard let self = self else { return }
+                if isComplete || error != nil {
+                    self.appState.handlePeerDisconnect(sessionId: sessionId)
+                }
+            }
         }
     }
 

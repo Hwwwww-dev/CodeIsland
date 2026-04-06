@@ -23,6 +23,7 @@ public struct SessionSnapshot {
     public var tmuxPane: String?        // tmux pane identifier (%0, %1, etc.)
     public var tmuxClientTty: String?   // tmux client TTY for real terminal detection
     public var termBundleId: String?    // __CFBundleIdentifier for precise terminal ID
+    public var cliPid: pid_t?            // CLI process PID (from bridge _ppid)
     public var source: String = "claude" // "claude" or "codex"
     public var interrupted: Bool = false
     /// nil = unchecked, false = not YOLO, true = YOLO
@@ -155,6 +156,69 @@ public struct SessionSnapshot {
         }
         return model
     }
+}
+
+public struct SessionSummary {
+    public let status: AgentStatus
+    public let primarySource: String
+    public let activeSessionCount: Int
+    public let totalSessionCount: Int
+
+    public init(status: AgentStatus, primarySource: String, activeSessionCount: Int, totalSessionCount: Int) {
+        self.status = status
+        self.primarySource = primarySource
+        self.activeSessionCount = activeSessionCount
+        self.totalSessionCount = totalSessionCount
+    }
+}
+
+public func deriveSessionSummary(from sessions: [String: SessionSnapshot]) -> SessionSummary {
+    var highestStatus: AgentStatus = .idle
+    var source = "claude"
+    var active = 0
+    var mostRecentIdleSource: (source: String, time: Date)?
+
+    for session in sessions.values {
+        if session.status != .idle {
+            active += 1
+        } else if mostRecentIdleSource == nil || session.lastActivity > mostRecentIdleSource!.time {
+            mostRecentIdleSource = (session.source, session.lastActivity)
+        }
+
+        switch session.status {
+        case .waitingApproval:
+            highestStatus = .waitingApproval
+            source = session.source
+        case .waitingQuestion:
+            if highestStatus != .waitingApproval {
+                highestStatus = .waitingQuestion
+                source = session.source
+            }
+        case .running:
+            if highestStatus == .idle || highestStatus == .processing {
+                highestStatus = .running
+                source = session.source
+            }
+        case .processing:
+            if highestStatus == .idle {
+                highestStatus = .processing
+                source = session.source
+            }
+        case .idle:
+            break
+        }
+    }
+
+    if highestStatus == .idle, let idleSource = mostRecentIdleSource?.source {
+        source = idleSource
+    }
+
+    return SessionSummary(
+        status: highestStatus,
+        primarySource: source,
+        activeSessionCount: active,
+        totalSessionCount: sessions.count
+    )
 }
 
 // MARK: - Side Effects
@@ -310,6 +374,9 @@ public func reduceEvent(
         // Re-apply metadata from this event (common extraction above wrote to the old session)
         if let cwd = event.rawJSON["cwd"] as? String, !cwd.isEmpty { sessions[sessionId]?.cwd = cwd }
         if let model = event.rawJSON["model"] as? String, !model.isEmpty { sessions[sessionId]?.model = model }
+        if let ppid = event.rawJSON["_ppid"] as? Int, ppid > 0 {
+            sessions[sessionId]?.cliPid = pid_t(ppid)
+        }
         if let source = event.rawJSON["_source"] as? String, !source.isEmpty {
             sessions[sessionId]?.source = source
         }
@@ -319,6 +386,8 @@ public func reduceEvent(
         if let tty = event.rawJSON["_tty"] as? String, !tty.isEmpty { sessions[sessionId]?.ttyPath = tty }
         if let kitty = event.rawJSON["_kitty_window"] as? String, !kitty.isEmpty { sessions[sessionId]?.kittyWindowId = kitty }
         if let pane = event.rawJSON["_tmux_pane"] as? String, !pane.isEmpty { sessions[sessionId]?.tmuxPane = pane }
+        if let tmuxTty = event.rawJSON["_tmux_client_tty"] as? String, !tmuxTty.isEmpty { sessions[sessionId]?.tmuxClientTty = tmuxTty }
+        if let mode = event.rawJSON["permission_mode"] as? String { sessions[sessionId]?.permissionMode = mode }
         if let roots = event.rawJSON["workspace_roots"] as? [String], let first = roots.first, !first.isEmpty {
             sessions[sessionId]?.cwd = first
         }
@@ -365,7 +434,7 @@ public func reduceEvent(
 
 // MARK: - Private Helpers
 
-private func extractMetadata(into sessions: inout [String: SessionSnapshot], sessionId: String, event: HookEvent) {
+public func extractMetadata(into sessions: inout [String: SessionSnapshot], sessionId: String, event: HookEvent) {
     if let cwd = event.rawJSON["cwd"] as? String, !cwd.isEmpty {
         sessions[sessionId]?.cwd = cwd
     } else if sessions[sessionId]?.cwd == nil,
@@ -438,6 +507,9 @@ private func extractMetadata(into sessions: inout [String: SessionSnapshot], ses
            let pane = env["TMUX_PANE"], !pane.isEmpty {
             sessions[sessionId]?.tmuxPane = pane
         }
+    }
+    if let ppid = event.rawJSON["_ppid"] as? Int, ppid > 0 {
+        sessions[sessionId]?.cliPid = pid_t(ppid)
     }
     if let source = event.rawJSON["_source"] as? String, !source.isEmpty {
         sessions[sessionId]?.source = source

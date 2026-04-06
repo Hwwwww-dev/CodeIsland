@@ -30,7 +30,12 @@ if [ ! -f ".build/CodeIsland.icns" ]; then
     echo "Generating app icon..."
     ICONSET=".build/CodeIsland.iconset"
     mkdir -p "$ICONSET"
-    qlmanage -t -s 1024 -o .build/ logo.svg 2>/dev/null
+    # Use rsvg-convert to preserve transparency (qlmanage fills transparent areas with white)
+    if command -v rsvg-convert >/dev/null 2>&1; then
+        rsvg-convert -w 1024 -h 1024 logo.svg -o .build/logo.svg.png
+    else
+        qlmanage -t -s 1024 -o .build/ logo.svg 2>/dev/null
+    fi
     for size in 16 32 128 256 512; do
         sips -z $size $size ".build/logo.svg.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null 2>&1
         double=$((size * 2))

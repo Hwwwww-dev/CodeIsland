@@ -130,7 +130,16 @@ enum DebugHarness {
         state.sessions["preview-question"] = s
         state.activeSessionId = "preview-question"
 
-        // Inject a mock question (no continuation — UI only, non-interactive)
+        // Inject a mock question payload for UI preview
+        state.previewQuestionPayload = QuestionPayload(
+            question: "Which approach do you prefer?",
+            options: ["Extract service class", "Use middleware pattern", "Inline helpers"],
+            descriptions: [
+                "Create a dedicated AuthService class with dependency injection",
+                "Add Express-style middleware for auth checks",
+                "Keep auth logic inline with helper functions"
+            ]
+        )
         state.surface = .questionCard(sessionId: "preview-question")
     }
 

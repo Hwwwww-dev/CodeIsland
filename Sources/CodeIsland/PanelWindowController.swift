@@ -22,6 +22,8 @@ private class NotchHostingView<Content: View>: NSHostingView<Content> {
         super.mouseDown(with: event)
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     /// Always defer `needsUpdateConstraints = true` to the next run-loop turn.
     /// During AppKit's display-cycle (constraint-update or layout phases),
     /// calling setNeedsUpdateConstraints synchronously re-enters
@@ -116,6 +118,8 @@ class PanelWindowController {
             backing: .buffered,
             defer: false
         )
+        panel.isFloatingPanel = true
+        panel.acceptsMouseMovedEvents = true
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.mainMenuWindow)) + 2)
         panel.backgroundColor = .clear
         panel.isOpaque = false
@@ -138,6 +142,10 @@ class PanelWindowController {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
+                self?.rebuildForCurrentScreen()
+                // macOS may not have finished updating NSScreen.screens when the notification fires.
+                // Rebuild again after a short delay to pick up the final screen configuration.
+                try? await Task.sleep(nanoseconds: 500_000_000)
                 self?.rebuildForCurrentScreen()
             }
         }
@@ -197,6 +205,11 @@ class PanelWindowController {
                 switch self.appState.surface {
                 case .approvalCard, .questionCard: return
                 default: break
+                }
+                // Don't collapse if click is within the panel frame (event leaked on external display)
+                if let panelFrame = self.panel?.frame {
+                    let clickLocation = NSEvent.mouseLocation
+                    if panelFrame.contains(clickLocation) { return }
                 }
                 withAnimation(NotchAnimation.close) {
                     self.appState.surface = .collapsed
@@ -346,22 +359,13 @@ class PanelWindowController {
         return false
     }
 
-    /// Check if the terminal running the active session is the foreground app
+    /// Fast check: is the terminal running the active session the foreground app?
+    /// Main-thread safe — no AppleScript or subprocess calls.
     func isActiveTerminalForeground() -> Bool {
         guard let sessionId = appState.activeSessionId,
               let session = appState.sessions[sessionId],
-              let termApp = session.termApp else { return false }
-        guard let frontApp = NSWorkspace.shared.frontmostApplication else { return false }
-        let frontName = frontApp.localizedName?.lowercased() ?? ""
-        let bundleId = frontApp.bundleIdentifier?.lowercased() ?? ""
-        // Normalize: strip ".app" suffix and "apple_" prefix for consistent matching
-        // e.g. "iTerm.app" → "iterm", "Apple_Terminal" → "terminal"
-        let term = termApp.lowercased()
-            .replacingOccurrences(of: ".app", with: "")
-            .replacingOccurrences(of: "apple_", with: "")
-        let normalizedFront = frontName.replacingOccurrences(of: ".app", with: "")
-        return normalizedFront.contains(term) || term.contains(normalizedFront) ||
-               bundleId.contains(term)
+              session.termApp != nil else { return false }
+        return TerminalVisibilityDetector.isTerminalFrontmostForSession(session)
     }
 
     deinit {

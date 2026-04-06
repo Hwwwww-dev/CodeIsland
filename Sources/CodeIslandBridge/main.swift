@@ -206,8 +206,7 @@ guard let sessionId = json["session_id"] as? String, !sessionId.isEmpty else {
 let eventName = json["hook_event_name"] as? String ?? ""
 let isPermission = eventName == "PermissionRequest"
 let isQuestion = (eventName == "Notification" || eventName == "afterAgentThought")
-    && (json["question"] as? String != nil
-        || (json["message"] as? String)?.contains("?") == true)
+    && json["question"] as? String != nil
 let isBlocking = isPermission || isQuestion
 
 debugLog("event=\(eventName) session=\(sessionId) permission=\(isPermission) question=\(isQuestion)")
@@ -263,6 +262,9 @@ if !tty.isEmpty {
 if let source = sourceTag {
     json["_source"] = source
 }
+
+// Parent PID — the CLI process that spawned this hook (works for any CLI)
+json["_ppid"] = getppid()
 
 // --- Serialize enriched JSON ---
 guard let enriched = try? JSONSerialization.data(withJSONObject: json) else { exit(1) }
