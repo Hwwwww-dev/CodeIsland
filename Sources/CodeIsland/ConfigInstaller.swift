@@ -29,7 +29,8 @@ struct ConfigInstaller {
     private static let bridgePath = NSHomeDirectory() + "/.claude/hooks/codeisland-bridge"
     private static let hookScriptPath = NSHomeDirectory() + "/.claude/hooks/codeisland-hook.sh"
     private static let hookCommand = "~/.claude/hooks/codeisland-hook.sh"
-    private static let bridgeCommand = "~/.claude/hooks/codeisland-bridge"
+    /// Absolute path for external CLI hooks — avoids tilde expansion issues in IDE environments
+    private static let bridgeCommand = NSHomeDirectory() + "/.claude/hooks/codeisland-bridge"
 
     // MARK: - All supported CLIs
 
@@ -215,6 +216,12 @@ struct ConfigInstaller {
             } else {
                 if !installExternalHooks(cli: cli, fm: fm) { ok = false }
             }
+        }
+
+        // Codex requires codex_hooks = true in config.toml
+        if isEnabled(source: "codex"),
+           fm.fileExists(atPath: NSHomeDirectory() + "/.codex") {
+            enableCodexHooksConfig(fm: fm)
         }
 
         // Install OpenCode plugin
@@ -454,7 +461,9 @@ struct ConfigInstaller {
         }
 
         var hooks = root[cli.configKey] as? [String: Any] ?? [:]
-        let command = "\(bridgeCommand) --source \(cli.source)"
+        // Quote the path in case home directory contains spaces or special characters
+        let quotedBridge = bridgeCommand.contains(" ") ? "\"\(bridgeCommand)\"" : bridgeCommand
+        let command = "\(quotedBridge) --source \(cli.source)"
 
         for (event, timeout, _) in cli.events {
             var eventEntries = hooks[event] as? [[String: Any]] ?? []
@@ -493,15 +502,15 @@ struct ConfigInstaller {
             contents = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
         }
 
-        // Already set to true somewhere — don't touch
-        if contents.range(of: #"codex_hooks\s*=\s*true"#, options: .regularExpression) != nil {
+        // Already set to true (non-commented) — don't touch
+        if contents.range(of: #"(?m)^\s*codex_hooks\s*=\s*true"#, options: .regularExpression) != nil {
             return true
         }
 
-        // Set to false — flip it to true in place
-        if contents.range(of: #"codex_hooks\s*=\s*false"#, options: .regularExpression) != nil {
+        // Set to false (non-commented) — flip it to true in place
+        if contents.range(of: #"(?m)^\s*codex_hooks\s*=\s*false"#, options: .regularExpression) != nil {
             contents = contents.replacingOccurrences(
-                of: #"codex_hooks\s*=\s*false"#,
+                of: #"(?m)^\s*codex_hooks\s*=\s*false"#,
                 with: "codex_hooks = true",
                 options: .regularExpression
             )

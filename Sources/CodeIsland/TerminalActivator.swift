@@ -48,6 +48,18 @@ struct TerminalActivator {
             return
         }
 
+        // IDE integrated terminal: bring the IDE to front (no tab-level switching)
+        if session.isIDETerminal,
+           let bundleId = session.termBundleId {
+            if let app = NSWorkspace.shared.runningApplications.first(where: {
+                $0.bundleIdentifier == bundleId
+            }) {
+                if app.isHidden { app.unhide() }
+                app.activate(options: .activateIgnoringOtherApps)
+            }
+            return
+        }
+
         // IDE sources: just bring the app to front
         if let appName = appSources[session.source] {
             if let app = NSWorkspace.shared.runningApplications.first(where: {
@@ -77,12 +89,17 @@ struct TerminalActivator {
         }
         let lower = termApp.lowercased()
 
-        // --- tmux: switch pane first, then bring terminal to front ---
+        // --- tmux: switch pane first, then fall through to terminal-specific activation ---
         if let pane = session.tmuxPane, !pane.isEmpty {
             activateTmux(pane: pane)
-            bringToFront(termApp)
-            return
         }
+
+        // In tmux, use the client TTY (outer terminal) for tab matching,
+        // since ttyPath is the inner tmux pty which won't match the terminal's tab.
+        let inTmux = session.tmuxPane != nil && !(session.tmuxPane ?? "").isEmpty
+        let effectiveTty = inTmux
+            ? (session.tmuxClientTty ?? session.ttyPath)
+            : session.ttyPath
 
         // --- Tab-level switching (5 terminals) ---
 
@@ -101,12 +118,12 @@ struct TerminalActivator {
         }
 
         if lower.contains("terminal") || lower.contains("apple_terminal") {
-            activateTerminalApp(ttyPath: session.ttyPath)
+            activateTerminalApp(ttyPath: effectiveTty)
             return
         }
 
         if lower.contains("wezterm") || lower.contains("wez") {
-            activateWezTerm(ttyPath: session.ttyPath, cwd: session.cwd)
+            activateWezTerm(ttyPath: effectiveTty, cwd: session.cwd)
             return
         }
 

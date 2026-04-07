@@ -157,6 +157,34 @@ public struct SessionSnapshot {
     public var isCodex: Bool { source == "codex" }
     public var isClaude: Bool { source == "claude" }
 
+    /// True when the session runs inside a native app in APP mode (Cursor agent, Codex APP, etc.)
+    /// — the app IS the agent, not just a terminal hosting a CLI.
+    /// Requires both bundle ID AND source to match (Claude CLI in Cursor terminal ≠ native app mode).
+    public var isNativeAppMode: Bool {
+        guard let bid = termBundleId else { return false }
+        guard let expectedSource = Self.appBundleSources[bid] else { return false }
+        return source == expectedSource
+    }
+
+    /// True when the session runs inside an IDE's integrated terminal.
+    /// We can't query IDE tab/pane state, so notification suppression should be skipped.
+    public var isIDETerminal: Bool {
+        guard let bid = termBundleId else { return false }
+        if isNativeAppMode { return false }
+        // Known apps used as terminal (e.g., Claude CLI in Cursor's integrated terminal)
+        if Self.appBundleNames[bid] != nil { return true }
+        let lower = bid.lowercased()
+        return lower.contains("vscode") || lower.contains("vscodium")
+            || lower == "com.trae.app"
+            || lower.contains("windsurf") || lower.contains("codeium")
+            || lower.contains("jetbrains")
+            || lower.contains("zed")
+            || lower.contains("xcode") || lower == "com.apple.dt.xcode"
+            || lower.contains("panic.nova")
+            || lower.contains("android.studio")
+            || lower.contains("antigravity")
+    }
+
     /// Bundle IDs of native apps (not terminals)
     private static let appBundleNames: [String: String] = [
         "com.todesktop.230313mzl4w4u92": "Cursor",
@@ -165,6 +193,17 @@ public struct SessionSnapshot {
         "com.tencent.codebuddy": "CodeBuddy",
         "com.openai.codex": "Codex",
         "ai.opencode.desktop": "OpenCode",
+    ]
+
+    /// Maps native app bundle IDs to their expected source identifier.
+    /// Used by isNativeAppMode to distinguish "Cursor agent" from "Claude CLI in Cursor terminal".
+    private static let appBundleSources: [String: String] = [
+        "com.todesktop.230313mzl4w4u92": "cursor",
+        "com.qoder.ide": "qoder",
+        "com.factory.app": "droid",
+        "com.tencent.codebuddy": "codebuddy",
+        "com.openai.codex": "codex",
+        "ai.opencode.desktop": "opencode",
     ]
 
     /// Short terminal/app name for display tag
@@ -183,6 +222,27 @@ public struct SessionSnapshot {
             if lower.contains("kitty") { return "Kitty" }
             if lower.contains("alacritty") { return "Alacritty" }
             if lower.contains("wezterm") { return "WezTerm" }
+            // IDE integrated terminals
+            if lower.contains("vscode") || lower.contains("vscodium") { return "VS Code" }
+            if lower == "com.trae.app" { return "Trae" }
+            if lower.contains("windsurf") { return "Windsurf" }
+            if lower.contains("jetbrains") {
+                if lower.contains("intellij") { return "IDEA" }
+                if lower.contains("pycharm") { return "PyCharm" }
+                if lower.contains("webstorm") { return "WebStorm" }
+                if lower.contains("goland") { return "GoLand" }
+                if lower.contains("clion") { return "CLion" }
+                if lower.contains("rider") { return "Rider" }
+                if lower.contains("rubymine") { return "RubyMine" }
+                if lower.contains("phpstorm") { return "PhpStorm" }
+                if lower.contains("datagrip") { return "DataGrip" }
+                return "JetBrains"
+            }
+            if lower.contains("zed") { return "Zed" }
+            if lower.contains("xcode") || lower == "com.apple.dt.xcode" { return "Xcode" }
+            if lower.contains("panic.nova") { return "Nova" }
+            if lower.contains("android.studio") { return "Android Studio" }
+            if lower.contains("antigravity") { return "Antigravity" }
         }
         // Fallback to TERM_PROGRAM
         guard let app = termApp else { return nil }

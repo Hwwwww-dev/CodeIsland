@@ -17,6 +17,11 @@ struct NotchPanelView: View {
     @State private var hoverTimer: Timer?
 
     private var isActive: Bool { !appState.sessions.isEmpty }
+    /// First launch / no-session state should still render a visible marker so the app
+    /// doesn't disappear completely behind the physical notch.
+    private var showIdleIndicator: Bool {
+        !isActive && !hideWhenNoSession
+    }
     /// Whether the bar content should be visible (respects hideWhenNoSession)
     private var showBar: Bool {
         isActive && !(hideWhenNoSession && appState.activeSessionCount == 0)
@@ -34,6 +39,7 @@ struct NotchPanelView: View {
     /// Total panel width — adapts based on state and screen geometry
     private var panelWidth: CGFloat {
         let maxWidth = min(620, screenWidth - 40)
+        if showIdleIndicator { return notchW + compactWingWidth * 2 }
         if !isActive { return hasNotch ? notchW - 20 : notchW }
         if shouldShowExpanded { return min(max(notchW + 200, 580), maxWidth) }
         let wing = compactWingWidth
@@ -50,6 +56,31 @@ struct NotchPanelView: View {
                         CompactLeftWing(appState: appState, expanded: shouldShowExpanded, mascotSize: mascotSize)
                         Spacer(minLength: hasNotch && !shouldShowExpanded ? notchW : 0)
                         CompactRightWing(appState: appState, expanded: shouldShowExpanded)
+                    }
+                    .frame(height: notchHeight)
+                } else if showIdleIndicator {
+                    HStack(spacing: 0) {
+                        HStack(spacing: 6) {
+                            AppLogoView(size: mascotSize, showBackground: false)
+                                .opacity(0.9)
+                        }
+                        .frame(minWidth: compactWingWidth, alignment: .leading)
+                        .padding(.leading, 6)
+
+                        Spacer(minLength: hasNotch ? notchW : 0)
+
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(Color(red: 0.3, green: 0.85, blue: 0.4))
+                                .frame(width: 6, height: 6)
+                            PixelText(
+                                text: "ON",
+                                color: .white.opacity(0.55),
+                                pixelSize: 1.35
+                            )
+                        }
+                        .frame(minWidth: compactWingWidth, alignment: .trailing)
+                        .padding(.trailing, 8)
                     }
                     .frame(height: notchHeight)
                 } else {
@@ -1832,4 +1863,3 @@ private func stripDirectives(_ text: String) -> String {
     let cleaned = result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     return cleaned
 }
-

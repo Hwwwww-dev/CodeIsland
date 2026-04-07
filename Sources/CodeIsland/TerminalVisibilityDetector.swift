@@ -55,16 +55,21 @@ struct TerminalVisibilityDetector {
         // Fast path: terminal not even frontmost
         guard isTerminalFrontmostForSession(session) else { return false }
 
+        // Native app bundles (Cursor APP, Codex APP): app IS the session, suppress when frontmost
+        if session.isNativeAppMode {
+            return true
+        }
+
+        // IDE integrated terminals: can't query tab state, assume NOT visible
+        // (show notification — safer than suppressing when user may be editing code)
+        if session.isIDETerminal {
+            return false
+        }
+
         guard let termApp = session.termApp else { return false }
         let term = termApp.lowercased()
             .replacingOccurrences(of: ".app", with: "")
             .replacingOccurrences(of: "apple_", with: "")
-
-        // Native app bundles: app-level is the best we can do
-        if let tb = session.termBundleId?.lowercased(),
-           NSWorkspace.shared.frontmostApplication?.bundleIdentifier?.lowercased() == tb {
-            return true
-        }
 
         // tmux takes priority: if session runs in a tmux pane, check that pane
         // regardless of which terminal app wraps tmux (iTerm2, Ghostty, etc.)

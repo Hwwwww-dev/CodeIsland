@@ -81,6 +81,7 @@ final class AppState {
         for (key, session) in sessions where session.status != .idle && session.status != .waitingApproval && session.status != .waitingQuestion {
             let elapsed = -session.lastActivity.timeIntervalSinceNow
             if session.status == .processing && session.currentTool == nil && elapsed > 60 {
+                if processMonitors[key] != nil { continue }
                 sessions[key]?.status = .idle
                 sessions[key]?.currentTool = nil
                 sessions[key]?.toolDescription = nil
@@ -267,7 +268,7 @@ final class AppState {
     private func shouldSuppressAppLevel(for sessionId: String) -> Bool {
         guard UserDefaults.standard.bool(forKey: SettingsKey.smartSuppress) else { return false }
         guard let session = sessions[sessionId],
-              session.termApp != nil else { return false }
+              (session.termApp != nil || session.termBundleId != nil) else { return false }
         return TerminalVisibilityDetector.isTerminalFrontmostForSession(session)
     }
 
