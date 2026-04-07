@@ -47,6 +47,9 @@ enum SettingsKey {
     // Session grouping
     static let sessionGroupingMode = "sessionGroupingMode"
 
+    // Tool status display
+    static let showToolStatus = "showToolStatus"              // true = detailed, false = simple
+
 }
 
 struct SettingsDefaults {
@@ -77,6 +80,8 @@ struct SettingsDefaults {
     static let mascotSpeed = 100  // percentage: 0–300, 0 = silent
 
     static let sessionGroupingMode = "all"
+
+    static let showToolStatus = true
 }
 
 @MainActor
@@ -109,6 +114,7 @@ class SettingsManager {
             SettingsKey.maxToolHistory: SettingsDefaults.maxToolHistory,
             SettingsKey.mascotSpeed: SettingsDefaults.mascotSpeed,
             SettingsKey.sessionGroupingMode: SettingsDefaults.sessionGroupingMode,
+            SettingsKey.showToolStatus: SettingsDefaults.showToolStatus,
         ])
     }
 

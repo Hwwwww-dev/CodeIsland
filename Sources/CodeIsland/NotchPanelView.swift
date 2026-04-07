@@ -12,10 +12,15 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
     @AppStorage(SettingsKey.smartSuppress) private var smartSuppress = SettingsDefaults.smartSuppress
     @AppStorage(SettingsKey.hideWhenNoSession) private var hideWhenNoSession = SettingsDefaults.hideWhenNoSession
+    @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
     @State private var hoverTimer: Timer?
     @State private var idleHovered = false
+    /// Curtain animation for tool status toggle
+    @State private var curtainOffset: CGFloat = 0
+    @State private var curtainOpacity: Double = 1
+    @State private var displayedToolStatus: Bool = SettingsDefaults.showToolStatus
 
     private var isActive: Bool { !appState.sessions.isEmpty }
     /// First launch / no-session state should still render a visible marker so the app
@@ -45,7 +50,9 @@ struct NotchPanelView: View {
         if shouldShowExpanded { return min(max(notchW + 200, 580), maxWidth) }
         let wing = compactWingWidth
         let extra: CGFloat = appState.status == .idle ? 0 : 20
-        return notchW + wing * 2 + extra
+        // Reserve space for tool status — proportional to screen width
+        let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
+        return notchW + wing * 2 + extra + toolExtra
     }
 
     var body: some View {
@@ -54,9 +61,16 @@ struct NotchPanelView: View {
                 if showBar {
                     // Active: compact bar — wider version when expanded
                     HStack(spacing: 0) {
-                        CompactLeftWing(appState: appState, expanded: shouldShowExpanded, mascotSize: mascotSize)
-                        Spacer(minLength: hasNotch && !shouldShowExpanded ? notchW : 0)
-                        CompactRightWing(appState: appState, expanded: shouldShowExpanded)
+                        CompactLeftWing(appState: appState, expanded: shouldShowExpanded, mascotSize: mascotSize, hasNotch: hasNotch, showToolStatus: showToolStatus)
+                        if hasNotch && !shouldShowExpanded {
+                            Spacer(minLength: notchW)
+                        } else if !shouldShowExpanded && showToolStatus {
+                            CompactToolStatus(appState: appState)
+                            Spacer(minLength: 0)
+                        } else {
+                            Spacer(minLength: 0)
+                        }
+                        CompactRightWing(appState: appState, expanded: shouldShowExpanded, hasNotch: hasNotch)
                     }
                     .frame(height: notchHeight)
                 } else if showIdleIndicator {
@@ -145,6 +159,27 @@ struct NotchPanelView: View {
                 )
                 .fill(.black)
             )
+            .offset(y: curtainOffset)
+            .opacity(curtainOpacity)
+            .onChange(of: showToolStatus) { _, newValue in
+                // Phase 1: entire bar slides up and fades out
+                withAnimation(.easeIn(duration: 0.2)) {
+                    curtainOffset = -notchHeight
+                    curtainOpacity = 0
+                }
+                // Phase 2: switch width while hidden
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    displayedToolStatus = newValue
+                }
+                // Phase 3: entire bar slides back down
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        curtainOffset = 0
+                        curtainOpacity = 1
+                    }
+                }
+            }
+            .onAppear { displayedToolStatus = showToolStatus }
             .contentShape(Rectangle())
             .onHover { hovering in
                 // Idle indicator hover
@@ -224,10 +259,15 @@ private struct CompactLeftWing: View {
     var appState: AppState
     let expanded: Bool
     let mascotSize: CGFloat
+    let hasNotch: Bool
+    let showToolStatus: Bool
     @AppStorage(SettingsKey.sessionGroupingMode) private var groupingMode = SettingsDefaults.sessionGroupingMode
 
     private var displaySource: String { appState.rotatingSession?.source ?? appState.primarySource }
     private var displayStatus: AgentStatus { appState.rotatingSession?.status ?? appState.status }
+    private var liveTool: String? { appState.rotatingSession?.currentTool ?? appState.currentTool }
+    @State private var shownTool: String?
+    @State private var lingerTimer: Timer?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -262,19 +302,55 @@ private struct CompactLeftWing: View {
                     .id(displaySource)
                     .transition(.opacity)
                     .animation(.easeInOut(duration: 0.3), value: displaySource)
+
+                // On notch screens, show tool name only (no description, space is tight)
+                if hasNotch, showToolStatus, let tool = shownTool {
+                    Text(tool)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(toolStatusColor(tool))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .transition(.opacity)
+                }
             }
         }
         .padding(.leading, 6)
         .clipped()
+        .onChange(of: liveTool) { _, newTool in
+            lingerTimer?.invalidate()
+            if let newTool {
+                withAnimation(.easeInOut(duration: 0.2)) { shownTool = newTool }
+            } else {
+                lingerTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: 0.3)) { shownTool = nil }
+                    }
+                }
+            }
+        }
+        // Session rotation: immediately sync tool to avoid stale linger from previous session
+        .onChange(of: appState.rotatingSessionId) { _, _ in
+            lingerTimer?.invalidate()
+            let newTool = liveTool
+            withAnimation(.easeInOut(duration: 0.2)) { shownTool = newTool }
+        }
     }
 }
 
-/// Right side: model + session count
+/// Right side: project name + session count (detailed) or just count (simple)
 private struct CompactRightWing: View {
     var appState: AppState
     let expanded: Bool
+    let hasNotch: Bool
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
+    @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
+
+    private var projectName: String? {
+        let cwd = appState.rotatingSession?.cwd ?? appState.sessions.values.first?.cwd
+        guard let cwd, !cwd.isEmpty else { return nil }
+        return (cwd as NSString).lastPathComponent
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -297,22 +373,150 @@ private struct CompactRightWing: View {
                         .symbolEffect(.pulse, options: .repeating)
                 }
 
-                HStack(spacing: 1) {
-                    let active = appState.activeSessionCount
-                    let total = appState.totalSessionCount
-                    if active > 0 {
-                        Text("\(active)")
-                            .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
-                        Text("/")
-                            .foregroundStyle(.white.opacity(0.4))
+                if showToolStatus {
+                    // Detailed mode: session count (project name is shown in center on non-notch)
+                    HStack(spacing: 1) {
+                        let active = appState.activeSessionCount
+                        let total = appState.totalSessionCount
+                        if active > 0 {
+                            Text("\(active)")
+                                .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
+                            Text("/")
+                                .foregroundStyle(.white.opacity(0.4))
+                        }
+                        Text("\(total)")
+                            .foregroundStyle(.white.opacity(0.9))
                     }
-                    Text("\(total)")
-                        .foregroundStyle(.white.opacity(0.9))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                } else {
+                    // Simple mode: original session count only
+                    HStack(spacing: 1) {
+                        let active = appState.activeSessionCount
+                        let total = appState.totalSessionCount
+                        if active > 0 {
+                            Text("\(active)")
+                                .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
+                            Text("/")
+                                .foregroundStyle(.white.opacity(0.4))
+                        }
+                        Text("\(total)")
+                            .foregroundStyle(.white.opacity(0.9))
+                    }
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
                 }
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
             }
         }
         .padding(.trailing, 6)
+    }
+}
+
+// MARK: - Tool Status Helpers
+
+/// Accent color for each tool category — shared between notch and non-notch views
+private func toolStatusColor(_ tool: String) -> Color {
+    switch tool.lowercased() {
+    case "bash": return Color(red: 0.4, green: 1.0, blue: 0.5)
+    case "edit", "write": return Color(red: 0.5, green: 0.7, blue: 1.0)
+    case "read": return Color(red: 0.9, green: 0.8, blue: 0.4)
+    case "grep", "glob": return Color(red: 0.8, green: 0.6, blue: 1.0)
+    case "agent": return Color(red: 1.0, green: 0.6, blue: 0.4)
+    default: return .white.opacity(0.7)
+    }
+}
+
+// MARK: - Compact Tool Status (non-notch center area)
+
+/// Shows the current tool activity in the center of the bar on non-notch screens.
+/// Keeps the last tool visible for a short linger period to avoid flashing.
+private struct CompactToolStatus: View {
+    var appState: AppState
+
+    private var liveTool: String? { appState.rotatingSession?.currentTool ?? appState.currentTool }
+    private var liveDesc: String? { appState.rotatingSession?.toolDescription ?? appState.toolDescription }
+    private var displayStatus: AgentStatus { appState.rotatingSession?.status ?? appState.status }
+
+    private var displaySessionId: String? {
+        appState.rotatingSessionId ?? appState.sessions.keys.sorted().first
+    }
+    private var displaySession: SessionSnapshot? {
+        guard let sid = displaySessionId else { return nil }
+        return appState.sessions[sid]
+    }
+    private var projectName: String? {
+        guard let cwd = displaySession?.cwd, !cwd.isEmpty else { return nil }
+        return (cwd as NSString).lastPathComponent
+    }
+
+    @State private var shownTool: String?
+    @State private var shownDesc: String?
+    @State private var lingerTimer: Timer?
+
+    /// Extract meaningful part of description — file paths show last component
+    private func shortDesc(_ desc: String) -> String {
+        let trimmed = desc.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.contains("/") {
+            return (trimmed as NSString).lastPathComponent
+        }
+        return trimmed
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            // Project name — always visible
+            if let project = projectName {
+                Text(project)
+                    .foregroundStyle(.white.opacity(0.8))
+                    .id("center-project-\(displaySessionId ?? "")")
+                    .transition(.opacity)
+            }
+
+            // Tool status or thinking indicator
+            if let tool = shownTool {
+                TypingIndicator(fontSize: 11, label: tool, bright: true, color: toolStatusColor(tool))
+                    .id("tool-\(tool)-\(appState.rotatingSessionId ?? "")")
+                if let desc = shownDesc {
+                    Text(shortDesc(desc))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .truncationMode(.tail)
+                }
+            } else if displayStatus == .processing {
+                TypingIndicator(fontSize: 11, label: "thinking", bright: true)
+                    .id("thinking-\(appState.rotatingSessionId ?? "")")
+            }
+        }
+        .font(.system(size: 11, weight: .medium, design: .monospaced))
+        .lineLimit(1)
+        .padding(.leading, 6)
+        .animation(.easeInOut(duration: 0.25), value: shownTool)
+        .animation(.easeInOut(duration: 0.15), value: shownDesc)
+        .animation(.easeInOut(duration: 0.3), value: appState.rotatingSessionId)
+        .onChange(of: liveTool) { _, newTool in
+            lingerTimer?.invalidate()
+            if let newTool {
+                shownTool = newTool
+                shownDesc = liveDesc
+            } else {
+                lingerTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
+                    DispatchQueue.main.async {
+                        withAnimation(.easeOut(duration: 0.3)) {
+                            shownTool = nil
+                            shownDesc = nil
+                        }
+                    }
+                }
+            }
+        }
+        .onChange(of: liveDesc) { _, newDesc in
+            if liveTool != nil { shownDesc = newDesc }
+        }
+        // Session rotation: immediately sync to avoid stale linger from previous session
+        .onChange(of: appState.rotatingSessionId) { _, _ in
+            lingerTimer?.invalidate()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                shownTool = liveTool
+                shownDesc = liveDesc
+            }
+        }
     }
 }
 
@@ -1695,26 +1899,37 @@ private struct SessionTag: View {
 private struct TypingIndicator: View {
     let fontSize: CGFloat
     var label: String? = nil
+    var bright: Bool = false
+    var color: Color? = nil
     @State private var phase: CGFloat = -60
 
     var body: some View {
         if let label {
+            let baseColor: Color = color ?? .white
+            let baseOpacity: Double = bright ? 0.6 : 0.35
+            let peakOpacity: Double = bright ? 0.8 : 0.5
+            let midOpacity: Double = bright ? 0.5 : 0.3
+            let bandWidth: CGFloat = bright ? 80 : 60
+            let duration: Double = 2.5
+            let endPhase: CGFloat = bright ? 100 : 80
+            let startPhase: CGFloat = bright ? -80 : -60
+
             Text(label)
                 .font(.system(size: fontSize, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.35))
+                .foregroundStyle(baseColor.opacity(baseOpacity))
                 .overlay(
                     LinearGradient(
                         stops: [
                             .init(color: .clear, location: 0),
-                            .init(color: .white.opacity(0.3), location: 0.4),
-                            .init(color: .white.opacity(0.5), location: 0.5),
-                            .init(color: .white.opacity(0.3), location: 0.6),
+                            .init(color: .white.opacity(midOpacity), location: bright ? 0.35 : 0.4),
+                            .init(color: .white.opacity(peakOpacity), location: 0.5),
+                            .init(color: .white.opacity(midOpacity), location: bright ? 0.65 : 0.6),
                             .init(color: .clear, location: 1),
                         ],
                         startPoint: .leading,
                         endPoint: .trailing
                     )
-                    .frame(width: 60)
+                    .frame(width: bandWidth)
                     .offset(x: phase)
                     .mask(
                         Text(label)
@@ -1722,11 +1937,12 @@ private struct TypingIndicator: View {
                     )
                 )
                 .onAppear {
-                    withAnimation(.easeInOut(duration: 2.5).repeatForever(autoreverses: false)) {
-                        phase = 80
+                    phase = startPhase
+                    withAnimation(.easeInOut(duration: duration).repeatForever(autoreverses: false)) {
+                        phase = endPhase
                     }
                 }
-                .onDisappear { phase = -60 }
+                .onDisappear { phase = startPhase }
         }
     }
 }

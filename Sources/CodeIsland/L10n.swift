@@ -105,6 +105,7 @@ final class L10n: ObservableObject {
         "5_lines": "5 Lines",
         "unlimited": "Unlimited",
         "show_agent_details": "Show Agent Activity Details",
+        "show_tool_status": "Detailed Tool Activity in Compact Bar",
 
         // Mascots
         "preview_status": "Preview Status",
@@ -270,6 +271,7 @@ final class L10n: ObservableObject {
         "5_lines": "5 行",
         "unlimited": "不限制",
         "show_agent_details": "显示代理活动详情",
+        "show_tool_status": "紧凑栏显示工具调用详情",
 
         // Mascots
         "preview_status": "预览状态",

@@ -417,6 +417,7 @@ private struct AppearancePage: View {
     @AppStorage(SettingsKey.contentFontSize) private var contentFontSize = SettingsDefaults.contentFontSize
     @AppStorage(SettingsKey.aiMessageLines) private var aiMessageLines = SettingsDefaults.aiMessageLines
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
+    @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
 
     var body: some View {
         Form {
@@ -456,6 +457,7 @@ private struct AppearancePage: View {
                     Text(l10n["unlimited"]).tag(0)
                 }
                 Toggle(l10n["show_agent_details"], isOn: $showAgentDetails)
+                Toggle(l10n["show_tool_status"], isOn: $showToolStatus)
             }
         }
         .formStyle(.grouped)
