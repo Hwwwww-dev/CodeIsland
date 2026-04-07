@@ -147,6 +147,11 @@ private struct GeneralPage: View {
                         SettingsManager.shared.launchAtLogin = v
                     }
                 Toggle(l10n["allow_horizontal_drag"], isOn: $allowHorizontalDrag)
+                    .onChange(of: allowHorizontalDrag) { _, enabled in
+                        if !enabled {
+                            SettingsManager.shared.panelHorizontalOffset = 0
+                        }
+                    }
                 Text(l10n["allow_horizontal_drag_desc"])
                     .font(.caption)
                     .foregroundStyle(.secondary)
