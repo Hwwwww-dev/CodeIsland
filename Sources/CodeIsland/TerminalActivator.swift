@@ -100,7 +100,7 @@ struct TerminalActivator {
             return
         }
 
-        if lower.contains("ghostty") {
+        if lower == "ghostty" {
             activateGhostty(cwd: session.cwd, sessionId: sessionId, source: session.source)
             return
         }
@@ -307,7 +307,7 @@ struct TerminalActivator {
         let name: String
         let lower = termApp.lowercased()
         if lower.contains("cmux") { name = "cmux" }
-        else if lower.contains("ghostty") { name = "Ghostty" }
+        else if lower == "ghostty" { name = "Ghostty" }
         else if lower.contains("iterm") { name = "iTerm2" }
         else if lower.contains("terminal") || lower.contains("apple_terminal") { name = "Terminal" }
         else if lower.contains("wezterm") || lower.contains("wez") { name = "WezTerm" }
