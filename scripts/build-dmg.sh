@@ -18,70 +18,67 @@ APP_DIR="$STAGING_DIR/CodeIsland.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 OUTPUT_DMG="$BUILD_DIR/CodeIsland.dmg"
 
-echo "==> Building CodeIsland ${VERSION}"
+echo "==> Building CodeIsland ${VERSION} (universal)"
 
-# Build
+# Build for both architectures
 cd "$REPO_ROOT"
-swift build -c release
+swift build -c release --arch arm64
+swift build -c release --arch x86_64
+
+ARM_DIR="$BUILD_DIR/arm64-apple-macosx/release"
+X86_DIR="$BUILD_DIR/x86_64-apple-macosx/release"
 
 echo "==> Assembling .app bundle"
 
 # Clean and recreate staging
 rm -rf "$STAGING_DIR"
 mkdir -p "$CONTENTS_DIR/MacOS"
+mkdir -p "$CONTENTS_DIR/Helpers"
 mkdir -p "$CONTENTS_DIR/Resources"
 
-# Copy binaries
-cp "$RELEASE_DIR/CodeIsland" "$CONTENTS_DIR/MacOS/CodeIsland"
-cp "$RELEASE_DIR/codeisland-bridge" "$CONTENTS_DIR/MacOS/codeisland-bridge"
+# Create universal binaries
+lipo -create "$ARM_DIR/CodeIsland" "$X86_DIR/CodeIsland" \
+     -output "$CONTENTS_DIR/MacOS/CodeIsland"
+lipo -create "$ARM_DIR/codeisland-bridge" "$X86_DIR/codeisland-bridge" \
+     -output "$CONTENTS_DIR/Helpers/codeisland-bridge"
 
-# Copy resource bundle (SPM copies Resources/ next to the executable)
-if [[ -d "$RELEASE_DIR/CodeIsland_CodeIsland.bundle" ]]; then
-    cp -R "$RELEASE_DIR/CodeIsland_CodeIsland.bundle" "$CONTENTS_DIR/Resources/"
-elif [[ -d "$RELEASE_DIR/Resources" ]]; then
-    cp -R "$RELEASE_DIR/Resources" "$CONTENTS_DIR/Resources/"
-fi
+# Write Info.plist (use the root Info.plist as base, update version)
+sed -e "s/<string>1\.0\.6<\/string>/<string>${VERSION}<\/string>/g" \
+    "$REPO_ROOT/Info.plist" > "$CONTENTS_DIR/Info.plist"
 
-# Copy app icon if present
-ICNS_SRC="$REPO_ROOT/Sources/CodeIsland/Resources/AppIcon.icns"
-if [[ -f "$ICNS_SRC" ]]; then
-    cp "$ICNS_SRC" "$CONTENTS_DIR/Resources/AppIcon.icns"
-fi
+# Compile app icon from Assets.xcassets + AppIcon.icon
+ICON_INFO_PLIST="$BUILD_DIR/AppIcon.partial.plist"
+xcrun actool \
+    --output-format human-readable-text \
+    --warnings \
+    --errors \
+    --notices \
+    --platform macosx \
+    --target-device mac \
+    --minimum-deployment-target 14.0 \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$ICON_INFO_PLIST" \
+    --compile "$CONTENTS_DIR/Resources" \
+    "$REPO_ROOT/Assets.xcassets" \
+    "$REPO_ROOT/AppIcon.icon"
 
-# Write Info.plist
-cat > "$CONTENTS_DIR/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleIdentifier</key>
-    <string>com.codeisland</string>
-    <key>CFBundleName</key>
-    <string>CodeIsland</string>
-    <key>CFBundleExecutable</key>
-    <string>CodeIsland</string>
-    <key>CFBundleVersion</key>
-    <string>${VERSION}</string>
-    <key>CFBundleShortVersionString</key>
-    <string>${VERSION}</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-</dict>
-</plist>
-PLIST
+# Copy SPM resource bundles — place at .app root where Bundle.module expects them
+for bundle in "$BUILD_DIR"/*/release/*.bundle; do
+    if [ -e "$bundle" ]; then
+        cp -R "$bundle" "$APP_DIR/"
+        break
+    fi
+done
+
+echo "==> Ad-hoc code signing"
+
+codesign --force --sign - "$CONTENTS_DIR/Helpers/codeisland-bridge"
+codesign --force --sign - "$CONTENTS_DIR/MacOS/CodeIsland"
 
 echo "==> App bundle assembled at $APP_DIR"
 
 # ---------------------------------------------------------------------------
-# Code signing (uncomment when you have an Apple Developer account)
+# Developer ID signing (uncomment when you have an Apple Developer account)
 # ---------------------------------------------------------------------------
 # TEAM_ID="YOUR_TEAM_ID"
 # SIGNING_IDENTITY="Developer ID Application: Your Name (${TEAM_ID})"
@@ -90,22 +87,6 @@ echo "==> App bundle assembled at $APP_DIR"
 #     --entitlements "$REPO_ROOT/CodeIsland.entitlements" \
 #     --sign "$SIGNING_IDENTITY" \
 #     "$APP_DIR"
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Notarization (uncomment after signing)
-# ---------------------------------------------------------------------------
-# BUNDLE_ID="com.codeisland"
-# APPLE_ID="your@apple.id"
-# APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"  # app-specific password
-#
-# xcrun notarytool submit "$OUTPUT_DMG" \
-#     --apple-id "$APPLE_ID" \
-#     --password "$APP_PASSWORD" \
-#     --team-id "$TEAM_ID" \
-#     --wait
-#
-# xcrun stapler staple "$OUTPUT_DMG"
 # ---------------------------------------------------------------------------
 
 echo "==> Creating DMG"
@@ -123,5 +104,21 @@ create-dmg \
     --app-drop-link 425 190 \
     "$OUTPUT_DMG" \
     "$STAGING_DIR/"
+
+# ---------------------------------------------------------------------------
+# Notarization (uncomment after Developer ID signing)
+# ---------------------------------------------------------------------------
+# BUNDLE_ID="com.codeisland.app"
+# APPLE_ID="your@apple.id"
+# APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"  # app-specific password
+#
+# xcrun notarytool submit "$OUTPUT_DMG" \
+#     --apple-id "$APPLE_ID" \
+#     --password "$APP_PASSWORD" \
+#     --team-id "$TEAM_ID" \
+#     --wait
+#
+# xcrun stapler staple "$OUTPUT_DMG"
+# ---------------------------------------------------------------------------
 
 echo "==> Done: $OUTPUT_DMG"
