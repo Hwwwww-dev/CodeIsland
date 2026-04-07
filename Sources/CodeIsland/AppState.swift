@@ -828,9 +828,10 @@ final class AppState {
         let cutoff = Date().addingTimeInterval(-30 * 60) // 30 minutes
         for p in persisted where p.lastActivity > cutoff {
             guard sessions[p.sessionId] == nil else { continue }
+            guard let source = SessionSnapshot.normalizedSupportedSource(p.source) else { continue }
             var snapshot = SessionSnapshot(startTime: p.startTime)
             snapshot.cwd = p.cwd
-            snapshot.source = p.source
+            snapshot.source = source
             snapshot.model = p.model
             snapshot.sessionTitle = p.sessionTitle
             snapshot.sessionTitleSource = p.sessionTitleSource
