@@ -21,7 +21,7 @@ class SettingsWindowController {
         }
 
         let settingsView = SettingsView()
-        let hostingController = NSHostingController(rootView: settingsView)
+        let hostingView = NSHostingView(rootView: settingsView)
 
         let screen = NSScreen.main ?? NSScreen.screens.first
         let screenW = screen?.frame.width ?? 1440
@@ -37,13 +37,10 @@ class SettingsWindowController {
         )
         window.titleVisibility = .visible
         window.title = L10n.shared["settings_title"]
-        window.contentViewController = hostingController
+        window.backgroundColor = .windowBackgroundColor
+        window.contentView = hostingView
         window.contentMinSize = NSSize(width: min(560, screenW * 0.4), height: min(420, screenH * 0.4))
-        // Toolbar is required for NavigationSplitView translucent sidebar
-        let toolbar = NSToolbar(identifier: "SettingsToolbar")
-        toolbar.showsBaselineSeparator = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
+        window.toolbar = nil
         window.center()
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
