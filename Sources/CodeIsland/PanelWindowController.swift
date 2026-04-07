@@ -68,11 +68,53 @@ private class NotchHostingView<Content: View>: NSHostingView<Content> {
     }
 }
 
+struct PanelScreenHopFrames {
+    let outgoing: NSRect
+    let incoming: NSRect
+}
+
+struct PanelScreenHopMotion {
+    let outgoingOffset: CGFloat
+    let incomingOffset: CGFloat
+    let fadeOutDuration: TimeInterval
+    let incomingPauseDuration: TimeInterval
+    let fadeInDuration: TimeInterval
+}
+
 @MainActor
 class PanelWindowController {
+    private enum ScreenHopMetrics {
+        static let outgoingOffset: CGFloat = 18
+        static let incomingOffset: CGFloat = 30
+        static let fadeOutDuration: TimeInterval = 0.14
+        static let incomingPauseDuration: TimeInterval = 0.06
+        static let fadeInDuration: TimeInterval = 0.34
+    }
+
+    nonisolated static func screenHopMotion() -> PanelScreenHopMotion {
+        PanelScreenHopMotion(
+            outgoingOffset: ScreenHopMetrics.outgoingOffset,
+            incomingOffset: ScreenHopMetrics.incomingOffset,
+            fadeOutDuration: ScreenHopMetrics.fadeOutDuration,
+            incomingPauseDuration: ScreenHopMetrics.incomingPauseDuration,
+            fadeInDuration: ScreenHopMetrics.fadeInDuration
+        )
+    }
+
     private var panel: NSPanel?
     private var hostingView: NotchHostingView<NotchPanelView>?
     private let appState: AppState
+
+    nonisolated static func screenHopFrames(
+        oldFrame: NSRect,
+        newFrame: NSRect
+    ) -> PanelScreenHopFrames {
+        let motion = screenHopMotion()
+        return PanelScreenHopFrames(
+            outgoing: oldFrame.offsetBy(dx: 0, dy: motion.outgoingOffset),
+            incoming: newFrame.offsetBy(dx: 0, dy: motion.incomingOffset)
+        )
+    }
 
     private func panelSize(for screen: NSScreen) -> NSSize {
         let maxSessions = CGFloat(max(2, UserDefaults.standard.integer(forKey: SettingsKey.maxVisibleSessions)))
@@ -94,6 +136,7 @@ class PanelWindowController {
     private var settingsObservers: [NSObjectProtocol] = []
     private var globalClickMonitor: Any?
     private var lastChosenScreenSignature = ""
+    private var isAnimatingScreenHop = false
 
     init(appState: AppState) {
         self.appState = appState
@@ -246,11 +289,82 @@ class PanelWindowController {
     }
 
     private func refreshCurrentScreen(forceRebuild: Bool = false) {
+        if isAnimatingScreenHop { return }
+
         let screen = chosenScreen()
         let signature = ScreenDetector.signature(for: screen)
 
-        if forceRebuild || signature != lastChosenScreenSignature {
+        if forceRebuild {
             rebuildForCurrentScreen(screen)
+            return
+        }
+
+        if signature != lastChosenScreenSignature {
+            animateScreenHop(to: screen, signature: signature)
+        }
+    }
+
+    private func animateScreenHop(to screen: NSScreen, signature: String) {
+        guard let panel = panel else {
+            rebuildForCurrentScreen(screen)
+            return
+        }
+
+        if !panel.isVisible || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            rebuildForCurrentScreen(screen)
+            panel.alphaValue = 1
+            return
+        }
+
+        isAnimatingScreenHop = true
+        let oldFrame = panel.frame
+        let newFrame = panelFrame(for: screen)
+        let motion = Self.screenHopMotion()
+        let frames = Self.screenHopFrames(oldFrame: oldFrame, newFrame: newFrame)
+        let targetSignature = signature
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = motion.fadeOutDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 0
+            panel.animator().setFrame(frames.outgoing, display: true)
+        } completionHandler: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
+                guard let panel = self.panel else {
+                    self.isAnimatingScreenHop = false
+                    return
+                }
+
+                let targetScreen = NSScreen.screens.first {
+                    ScreenDetector.signature(for: $0) == targetSignature
+                } ?? self.chosenScreen()
+
+                self.rebuildForCurrentScreen(targetScreen)
+                panel.alphaValue = 0
+                panel.setFrame(frames.incoming, display: true)
+
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(motion.incomingPauseDuration * 1_000_000_000))
+                    guard let self = self else { return }
+                    guard let panel = self.panel else {
+                        self.isAnimatingScreenHop = false
+                        return
+                    }
+
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = motion.fadeInDuration
+                        context.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+                        panel.animator().alphaValue = 1
+                        panel.animator().setFrame(newFrame, display: true)
+                    } completionHandler: { [weak self] in
+                        Task { @MainActor [weak self] in
+                            self?.lastChosenScreenSignature = targetSignature
+                            self?.isAnimatingScreenHop = false
+                        }
+                    }
+                }
+            }
         }
     }
 
