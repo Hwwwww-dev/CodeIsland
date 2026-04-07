@@ -74,20 +74,26 @@ class PanelWindowController {
     private var hostingView: NotchHostingView<NotchPanelView>?
     private let appState: AppState
 
-    private var panelSize: NSSize {
+    private func panelSize(for screen: NSScreen) -> NSSize {
         let maxSessions = CGFloat(max(2, UserDefaults.standard.integer(forKey: SettingsKey.maxVisibleSessions)))
         let maxH = max(300, maxSessions * 90 + 60)
-        let screenW = chosenScreen().frame.width
+        let screenW = screen.frame.width
         let width = min(620, screenW - 40)
         return NSSize(width: width, height: maxH)
     }
 
+    private var panelSize: NSSize {
+        panelSize(for: chosenScreen())
+    }
+
     private var visibilityTimer: Timer?
+    private var autoScreenPoller: Timer?
     private var fullscreenPoller: Timer?
     private var sessionObservationTask: Task<Void, Never>?
     private var fullscreenLatch = false
     private var settingsObservers: [NSObjectProtocol] = []
     private var globalClickMonitor: Any?
+    private var lastChosenScreenSignature = ""
 
     init(appState: AppState) {
         self.appState = appState
@@ -95,20 +101,7 @@ class PanelWindowController {
 
     func showPanel() {
         let screen = chosenScreen()
-        let hasNotch = ScreenDetector.screenHasNotch(screen)
-        let notchHeight = ScreenDetector.topBarHeight(for: screen)
-        let notchW = ScreenDetector.notchWidth(for: screen)
-
-        let rootView = NotchPanelView(
-            appState: appState,
-            hasNotch: hasNotch,
-            notchHeight: notchHeight,
-            notchW: notchW,
-            screenWidth: screen.frame.width
-        )
-        let contentView = NotchHostingView(rootView: rootView)
-        contentView.sizingOptions = []
-        contentView.translatesAutoresizingMaskIntoConstraints = true
+        let contentView = makeHostingView(for: screen)
         self.hostingView = contentView
 
         let size = panelSize
@@ -131,6 +124,7 @@ class PanelWindowController {
         panel.contentView = contentView
 
         self.panel = panel
+        self.lastChosenScreenSignature = ScreenDetector.signature(for: screen)
 
         updatePosition()
         panel.orderFrontRegardless()
@@ -142,11 +136,11 @@ class PanelWindowController {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.rebuildForCurrentScreen()
+                self?.refreshCurrentScreen(forceRebuild: true)
                 // macOS may not have finished updating NSScreen.screens when the notification fires.
                 // Rebuild again after a short delay to pick up the final screen configuration.
                 try? await Task.sleep(nanoseconds: 500_000_000)
-                self?.rebuildForCurrentScreen()
+                self?.refreshCurrentScreen(forceRebuild: true)
             }
         }
 
@@ -158,6 +152,7 @@ class PanelWindowController {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
+                self.refreshCurrentScreen()
                 if self.isActiveSpaceFullscreen() {
                     self.fullscreenLatch = true
                     self.updateVisibility()
@@ -177,6 +172,7 @@ class PanelWindowController {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
+                self.refreshCurrentScreen()
                 if !self.fullscreenLatch { self.updateVisibility() }
             }
         }
@@ -196,6 +192,7 @@ class PanelWindowController {
 
         // Observe settings changes (display choice, panel height)
         observeSettingsChanges()
+        configureAutoScreenPolling()
 
         // Global click monitor: close panel + repost click when clicking outside
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
@@ -219,11 +216,7 @@ class PanelWindowController {
         }
     }
 
-    /// Rebuild the SwiftUI view when the target screen changes
-    /// (notchHeight, notchWidth, hasNotch may be different)
-    private func rebuildForCurrentScreen() {
-        guard let panel = panel else { return }
-        let screen = chosenScreen()
+    private func makeHostingView(for screen: NSScreen) -> NotchHostingView<NotchPanelView> {
         let hasNotch = ScreenDetector.screenHasNotch(screen)
         let notchHeight = ScreenDetector.topBarHeight(for: screen)
         let notchW = ScreenDetector.notchWidth(for: screen)
@@ -238,9 +231,27 @@ class PanelWindowController {
         let contentView = NotchHostingView(rootView: rootView)
         contentView.sizingOptions = []
         contentView.translatesAutoresizingMaskIntoConstraints = true
+        return contentView
+    }
+
+    /// Rebuild the SwiftUI view when the target screen changes
+    /// (notchHeight, notchWidth, hasNotch may be different)
+    private func rebuildForCurrentScreen(_ screen: NSScreen) {
+        guard let panel = panel else { return }
+        let contentView = makeHostingView(for: screen)
         self.hostingView = contentView
         panel.contentView = contentView
+        lastChosenScreenSignature = ScreenDetector.signature(for: screen)
         updatePosition()
+    }
+
+    private func refreshCurrentScreen(forceRebuild: Bool = false) {
+        let screen = chosenScreen()
+        let signature = ScreenDetector.signature(for: screen)
+
+        if forceRebuild || signature != lastChosenScreenSignature {
+            rebuildForCurrentScreen(screen)
+        }
     }
 
     private var lastDisplayChoice = ""
@@ -257,7 +268,8 @@ class PanelWindowController {
                 let newChoice = SettingsManager.shared.displayChoice
                 if newChoice != self.lastDisplayChoice {
                     self.lastDisplayChoice = newChoice
-                    self.rebuildForCurrentScreen()
+                    self.refreshCurrentScreen(forceRebuild: true)
+                    self.configureAutoScreenPolling()
                 } else {
                     self.updateVisibility()
                     self.updatePosition()
@@ -267,14 +279,31 @@ class PanelWindowController {
         settingsObservers.append(observer)
     }
 
+    private func configureAutoScreenPolling() {
+        autoScreenPoller?.invalidate()
+        autoScreenPoller = nil
+
+        guard SettingsManager.shared.displayChoice == "auto" else { return }
+
+        autoScreenPoller = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshCurrentScreen()
+            }
+        }
+    }
+
     private func updatePosition() {
         guard let panel = panel else { return }
         let screen = chosenScreen()
-        let size = panelSize
+        panel.setFrame(panelFrame(for: screen), display: true)
+    }
+
+    private func panelFrame(for screen: NSScreen) -> NSRect {
+        let size = panelSize(for: screen)
         let screenFrame = screen.frame
         let x = screenFrame.midX - size.width / 2
         let y = screenFrame.maxY - size.height
-        panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        return NSRect(x: x, y: y, width: size.width, height: size.height)
     }
 
     /// Choose which screen to display on based on displayChoice setting
@@ -369,6 +398,8 @@ class PanelWindowController {
     }
 
     deinit {
+        autoScreenPoller?.invalidate()
+        fullscreenPoller?.invalidate()
         for observer in settingsObservers {
             NotificationCenter.default.removeObserver(observer)
         }
