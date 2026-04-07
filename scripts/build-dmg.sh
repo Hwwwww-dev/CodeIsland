@@ -70,15 +70,17 @@ for bundle in "$BUILD_DIR"/*/release/*.bundle; do
     fi
 done
 
-echo "==> Ad-hoc code signing"
-
-codesign --force --sign - "$CONTENTS_DIR/Helpers/codeisland-bridge"
-codesign --force --sign - "$APP_DIR"
-
 echo "==> App bundle assembled at $APP_DIR"
 
 # ---------------------------------------------------------------------------
-# Developer ID signing (uncomment when you have an Apple Developer account)
+# Code signing requires an Apple Developer account ($99/year).
+# Without Developer ID signing + notarization, macOS Gatekeeper will block
+# apps downloaded from the internet ("damaged" / "unidentified developer").
+#
+# Workaround for users: run  xattr -cr /Applications/CodeIsland.app
+# Or install via Homebrew:  brew install wxtsky/tap/codeisland
+#
+# To enable signing, uncomment below and set your credentials:
 # ---------------------------------------------------------------------------
 # TEAM_ID="YOUR_TEAM_ID"
 # SIGNING_IDENTITY="Developer ID Application: Your Name (${TEAM_ID})"
