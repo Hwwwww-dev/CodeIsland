@@ -1,5 +1,11 @@
 import Foundation
 
+public enum SessionTitleSource: String, Sendable, Codable {
+    case codexThreadName
+    case claudeCustomTitle
+    case claudeAiTitle
+}
+
 public struct SessionSnapshot {
     public var status: AgentStatus = .idle
     public var currentTool: String?
@@ -26,6 +32,9 @@ public struct SessionSnapshot {
     public var cliPid: pid_t?            // CLI process PID (from bridge _ppid)
     public var source: String = "claude" // "claude" or "codex"
     public var interrupted: Bool = false
+    public var sessionTitle: String?
+    public var sessionTitleSource: SessionTitleSource?
+    public var providerSessionId: String?
     /// nil = unchecked, false = not YOLO, true = YOLO
     public var isYoloMode: Bool?
 
@@ -72,6 +81,30 @@ public struct SessionSnapshot {
             return last
         }
         return "Session"
+    }
+
+    public func displayTitle(sessionId: String) -> String {
+        sessionLabel ?? sessionId
+    }
+
+    public func displaySessionId(sessionId: String) -> String {
+        if let providerSessionId {
+            let trimmed = providerSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return sessionId
+    }
+
+    public var projectDisplayName: String {
+        displayName
+    }
+
+    public var sessionLabel: String? {
+        guard let sessionTitle else { return nil }
+        let trimmed = sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Shortened model name: "claude-opus-4-6" → "opus"

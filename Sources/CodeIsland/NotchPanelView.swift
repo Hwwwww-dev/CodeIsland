@@ -831,21 +831,10 @@ private struct SessionListView: View {
     }
 
     var body: some View {
-        // Compute once per render — groupedSessions, totalCount, needsScroll, duplicateNames
+        // Compute once per render — groupedSessions, totalCount, needsScroll
         let groups = groupedSessions
         let totalSessionCount = groups.reduce(0) { $0 + $1.ids.count }
         let needsScroll = onlySessionId == nil && totalSessionCount > maxVisibleSessions
-        // Pre-compute duplicate display names O(n) instead of O(n²) per-card check
-        let duplicateNames: Set<String> = {
-            var seen = Set<String>()
-            var dupes = Set<String>()
-            for s in appState.sessions.values {
-                let name = s.displayName
-                if seen.contains(name) { dupes.insert(name) }
-                seen.insert(name)
-            }
-            return dupes
-        }()
         let content = VStack(spacing: 6) {
             ForEach(groups, id: \.header) { group in
                 if !group.header.isEmpty {
@@ -867,13 +856,18 @@ private struct SessionListView: View {
 
                 ForEach(group.ids, id: \.self) { sessionId in
                     if let session = appState.sessions[sessionId] {
-                        let hasDuplicate = duplicateNames.contains(session.displayName)
-                        SessionCard(
-                            sessionId: sessionId,
-                            session: session,
-                            showIdSuffix: hasDuplicate,
-                            isCompletion: onlySessionId != nil
-                        )
+                        let isStale = session.status == .idle && session.lastActivity.timeIntervalSinceNow < -900
+                        Group {
+                            if isStale {
+                                CollapsedSessionRow(session: session, sessionId: sessionId)
+                            } else {
+                                SessionCard(
+                                    sessionId: sessionId,
+                                    session: session,
+                                    isCompletion: onlySessionId != nil
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -940,6 +934,108 @@ private struct ThinScrollView<Content: View>: NSViewRepresentable {
         }
         scrollView.scrollerStyle = .overlay
         scrollView.verticalScroller?.controlSize = .mini
+    }
+}
+
+private struct SessionIdCopyButton: View {
+    let sessionId: String
+    var fontSize: CGFloat = 10
+
+    @State private var hovering = false
+    @State private var copied = false
+    @State private var resetTask: Task<Void, Never>?
+
+    private var compactLabel: String {
+        "#\(shortSessionId(sessionId))"
+    }
+
+    var body: some View {
+        Button(action: copySessionId) {
+            HStack(spacing: 4) {
+                Text(compactLabel)
+                    .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    .font(.system(size: max(8, fontSize - 1), weight: .semibold))
+            }
+            .foregroundStyle(copied ? Color(red: 0.3, green: 0.85, blue: 0.4) : .white.opacity(hovering ? 0.68 : 0.42))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color.white.opacity(hovering || copied ? 0.08 : 0.001))
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { h in
+            withAnimation(NotchAnimation.micro) { hovering = h }
+        }
+        .onDisappear {
+            resetTask?.cancel()
+        }
+        .help("\(L10n.shared["copy_session_id"]) \(sessionId)")
+    }
+
+    private func copySessionId() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(sessionId, forType: .string)
+        copied = true
+        resetTask?.cancel()
+        resetTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled else { return }
+            copied = false
+        }
+    }
+}
+
+private struct SessionIdentityLine: View {
+    let session: SessionSnapshot
+    let sessionId: String
+    let projectFontSize: CGFloat
+    let projectColor: Color
+    let sessionFontSize: CGFloat
+    let sessionColor: Color
+    let dividerColor: Color
+    let cardHovering: Bool
+
+    private var displaySessionId: String { session.displaySessionId(sessionId: sessionId) }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ProjectNameLink(
+                name: session.projectDisplayName,
+                cwd: session.cwd,
+                fontSize: projectFontSize,
+                color: projectColor,
+                cardHovering: cardHovering
+            )
+            .layoutPriority(2)
+
+            if let sessionLabel = session.sessionLabel {
+                Text("#\(sessionLabel)")
+                    .font(.system(size: sessionFontSize, weight: .medium, design: .monospaced))
+                    .foregroundStyle(sessionColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+
+                Text("·")
+                    .font(.system(size: sessionFontSize, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(dividerColor)
+
+                SessionIdCopyButton(
+                    sessionId: displaySessionId,
+                    fontSize: sessionFontSize
+                )
+                .fixedSize()
+            } else {
+                SessionIdCopyButton(
+                    sessionId: displaySessionId,
+                    fontSize: sessionFontSize
+                )
+                .fixedSize()
+            }
+        }
     }
 }
 
@@ -1016,7 +1112,6 @@ private struct SessionsExpandLink: View {
 private struct SessionCard: View {
     let sessionId: String
     let session: SessionSnapshot
-    var showIdSuffix: Bool = false
     var isCompletion: Bool = false
     @State private var hovering = false
     @AppStorage(SettingsKey.contentFontSize) private var contentFontSize = SettingsDefaults.contentFontSize
@@ -1061,23 +1156,18 @@ private struct SessionCard: View {
 
             // Column 2: Content
             VStack(alignment: .leading, spacing: 6) {
-                // Header: project name + tags
-                HStack(spacing: 6) {
-                    HStack(spacing: 4) {
-                        ProjectNameLink(
-                            name: session.displayName,
-                            cwd: session.cwd,
-                            fontSize: fontSize + 2,
-                            color: statusNameColor,
-                            cardHovering: hovering
-                        )
-                        if showIdSuffix {
-                            Text("#\(shortSessionId(sessionId))")
-                                .font(.system(size: fontSize - 1, design: .monospaced))
-                                .foregroundStyle(.gray)
-                        }
-                    }
-
+                // Header: project name + optional session label + short ID
+                HStack(alignment: .center, spacing: 8) {
+                    SessionIdentityLine(
+                        session: session,
+                        sessionId: sessionId,
+                        projectFontSize: fontSize + 2,
+                        projectColor: statusNameColor,
+                        sessionFontSize: fontSize,
+                        sessionColor: .white.opacity(0.76),
+                        dividerColor: .white.opacity(0.28),
+                        cardHovering: hovering
+                    )
                     Spacer(minLength: 8)
 
                     HStack(spacing: 4) {
@@ -1385,6 +1475,40 @@ private struct NotchPanelShape: Shape {
     }
 }
 
+/// Collapsed single-line row for idle sessions >15 min
+private struct CollapsedSessionRow: View {
+    let session: SessionSnapshot
+    let sessionId: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(.white.opacity(0.2))
+                .frame(width: 6, height: 6)
+            SessionIdentityLine(
+                session: session,
+                sessionId: sessionId,
+                projectFontSize: 11,
+                projectColor: .white.opacity(0.42),
+                sessionFontSize: 10,
+                sessionColor: .white.opacity(0.32),
+                dividerColor: .white.opacity(0.18),
+                cardHovering: false
+            )
+            if let prompt = session.lastUserPrompt {
+                Text("– \(prompt)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.25))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer()
+            TerminalJumpButton(session: session, sessionId: sessionId)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+    }
+}
 private struct TerminalJumpButton: View {
     let session: SessionSnapshot
     let sessionId: String
@@ -1679,10 +1803,26 @@ struct MiniAgentIcon: View {
 
 // MARK: - Shared Helpers
 
+/// Inline markdown rendering (bold, italic, code, links)
+private var markdownCache: [String: AttributedString] = [:]
+private let markdownCacheLimit = 128
+
+private func inlineMarkdown(_ text: String) -> AttributedString {
+    if let cached = markdownCache[text] { return cached }
+    let result: AttributedString
+    if let attr = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+        result = attr
+    } else {
+        result = AttributedString(text)
+    }
+    if markdownCache.count >= markdownCacheLimit {
+        markdownCache.removeAll(keepingCapacity: true)
+    }
+    markdownCache[text] = result
+    return result
+}
+
 /// Generate a short session ID with better disambiguation.
-/// For time-ordered UUIDs (e.g. Codex "019d631e-73d9-..."), the high bits are
-/// timestamps that barely differ within a day. Use last 4 chars of the UUID
-/// instead of the first 4 for better uniqueness.
 private func shortSessionId(_ id: String) -> String {
     let clean = id.replacingOccurrences(of: "-", with: "")
     if clean.count >= 8 {
@@ -1732,3 +1872,4 @@ private func stripDirectives(_ text: String) -> String {
     let cleaned = result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     return cleaned
 }
+

@@ -345,7 +345,8 @@ final class AppState {
 
     var activeDisplayName: String? {
         guard let id = activeSessionId, let s = sessions[id] else { return nil }
-        return s.displayName
+        let displaySessionId = s.displaySessionId(sessionId: id)
+        return s.displayTitle(sessionId: displaySessionId)
     }
 
     var activeModel: String? {
@@ -362,6 +363,27 @@ final class AppState {
         if primarySource != summary.primarySource { primarySource = summary.primarySource }
         if activeSessionCount != summary.activeSessionCount { activeSessionCount = summary.activeSessionCount }
         if totalSessionCount != summary.totalSessionCount { totalSessionCount = summary.totalSessionCount }
+    }
+
+    private func refreshProviderTitle(for trackedSessionId: String, providerSessionId: String? = nil) {
+        guard let session = sessions[trackedSessionId] else { return }
+
+        let lookupSessionId = providerSessionId ?? session.providerSessionId ?? trackedSessionId
+        if let providerSessionId {
+            sessions[trackedSessionId]?.providerSessionId = providerSessionId
+        } else if SessionTitleStore.supports(provider: session.source) {
+            sessions[trackedSessionId]?.providerSessionId = lookupSessionId
+        }
+
+        guard SessionTitleStore.supports(provider: session.source) else { return }
+
+        if let resolved = SessionTitleStore.title(for: lookupSessionId, provider: session.source, cwd: session.cwd) {
+            sessions[trackedSessionId]?.sessionTitle = resolved.title
+            sessions[trackedSessionId]?.sessionTitleSource = resolved.source
+        } else {
+            sessions[trackedSessionId]?.sessionTitle = nil
+            sessions[trackedSessionId]?.sessionTitleSource = nil
+        }
     }
 
     func handleEvent(_ event: HookEvent) {
@@ -424,6 +446,11 @@ final class AppState {
 
         for effect in effects {
             executeEffect(effect, sessionId: sessionId)
+        }
+
+        if let provider = sessions[sessionId]?.source,
+           SessionTitleStore.supports(provider: provider) {
+            refreshProviderTitle(for: sessionId)
         }
 
         // Handle the "else if activeSessionId == sessionId → mostActive" edge case
@@ -805,6 +832,9 @@ final class AppState {
             snapshot.cwd = p.cwd
             snapshot.source = p.source
             snapshot.model = p.model
+            snapshot.sessionTitle = p.sessionTitle
+            snapshot.sessionTitleSource = p.sessionTitleSource
+            snapshot.providerSessionId = p.providerSessionId
             snapshot.lastUserPrompt = p.lastUserPrompt
             snapshot.lastAssistantMessage = p.lastAssistantMessage
             if let prompt = p.lastUserPrompt {
@@ -826,6 +856,7 @@ final class AppState {
                 snapshot.cliPid = pid
             }
             sessions[p.sessionId] = snapshot
+            refreshProviderTitle(for: p.sessionId)
             // Synchronous path: if cliPid is set and process is alive, attach immediately
             if let pid = snapshot.cliPid, pid > 0, kill(pid, 0) == 0 {
                 monitorProcess(sessionId: p.sessionId, pid: pid)
@@ -942,6 +973,7 @@ final class AppState {
                         activeSessionId = info.sessionId
                     }
                 }
+                refreshProviderTitle(for: info.sessionId, providerSessionId: info.sessionId)
                 continue
             }
 
@@ -964,6 +996,7 @@ final class AppState {
                 if let pid = info.pid, processMonitors[existingKey] == nil {
                     monitorProcess(sessionId: existingKey, pid: pid)
                 }
+                refreshProviderTitle(for: existingKey, providerSessionId: info.sessionId)
                 continue
             }
 
@@ -973,6 +1006,7 @@ final class AppState {
             session.ttyPath = info.tty
             session.recentMessages = info.recentMessages
             session.source = info.source
+            session.providerSessionId = SessionTitleStore.supports(provider: info.source) ? info.sessionId : nil
             if let last = info.recentMessages.last(where: { $0.isUser }) {
                 session.lastUserPrompt = last.text
             }
@@ -980,6 +1014,7 @@ final class AppState {
                 session.lastAssistantMessage = last.text
             }
             sessions[info.sessionId] = session
+            refreshProviderTitle(for: info.sessionId, providerSessionId: info.sessionId)
             if let pid = info.pid {
                 monitorProcess(sessionId: info.sessionId, pid: pid)
             }

@@ -27,5 +27,10 @@ let package = Package(
             dependencies: ["CodeIslandCore"],
             path: "Tests/CodeIslandCoreTests"
         ),
+        .testTarget(
+            name: "CodeIslandTests",
+            dependencies: ["CodeIsland"],
+            path: "Tests/CodeIslandTests"
+        ),
     ]
 )
