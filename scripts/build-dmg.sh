@@ -43,7 +43,8 @@ lipo -create "$ARM_DIR/codeisland-bridge" "$X86_DIR/codeisland-bridge" \
      -output "$CONTENTS_DIR/Helpers/codeisland-bridge"
 
 # Write Info.plist (use the root Info.plist as base, update version)
-sed -e "s/<string>1\.0\.6<\/string>/<string>${VERSION}<\/string>/g" \
+CURRENT_VER=$(defaults read "$REPO_ROOT/Info.plist" CFBundleShortVersionString)
+sed -e "s/<string>${CURRENT_VER}<\/string>/<string>${VERSION}<\/string>/g" \
     "$REPO_ROOT/Info.plist" > "$CONTENTS_DIR/Info.plist"
 
 # Compile app icon and asset catalog

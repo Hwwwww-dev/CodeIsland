@@ -109,6 +109,7 @@ private struct SidebarRow: View {
         Label {
             Text(l10n[page.rawValue])
                 .font(.system(size: 13))
+                .padding(.leading, 2)
         } icon: {
             ZStack {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
