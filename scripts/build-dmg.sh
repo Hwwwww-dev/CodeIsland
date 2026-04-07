@@ -62,7 +62,7 @@ xcrun actool \
     "$REPO_ROOT/Assets.xcassets" \
     "$REPO_ROOT/AppIcon.icon"
 
-# Copy SPM resource bundles — place at .app root where Bundle.module expects them
+# Copy SPM resource bundles at .app root where Bundle.module expects them
 for bundle in "$BUILD_DIR"/*/release/*.bundle; do
     if [ -e "$bundle" ]; then
         cp -R "$bundle" "$APP_DIR/"
@@ -73,7 +73,7 @@ done
 echo "==> Ad-hoc code signing"
 
 codesign --force --sign - "$CONTENTS_DIR/Helpers/codeisland-bridge"
-codesign --force --sign - "$CONTENTS_DIR/MacOS/CodeIsland"
+codesign --force --sign - "$APP_DIR"
 
 echo "==> App bundle assembled at $APP_DIR"
 
