@@ -1,6 +1,6 @@
 # Changelog
 
-## [v1.0.13] - 2026-04-07
+## [v1.0.14] - 2026-04-07
 
 ### English
 - Fix apps built with libghostty (e.g. Supacode) being misidentified as Ghostty (#27)
