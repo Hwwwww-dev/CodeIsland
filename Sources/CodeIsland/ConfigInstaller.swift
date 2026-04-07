@@ -30,6 +30,8 @@ struct CLIConfig {
     let configKey: String      // top-level JSON key containing hooks ("hooks" for most)
     let format: HookFormat
     let events: [(String, Int, Bool)]  // (eventName, timeout, async)
+    /// Events that require a minimum CLI version (eventName → minVersion like "2.1.89")
+    var versionedEvents: [String: String] = [:]
 
     var fullPath: String { NSHomeDirectory() + "/\(configPath)" }
     var dirPath: String { (fullPath as NSString).deletingLastPathComponent }
@@ -64,6 +66,10 @@ struct ConfigInstaller {
                 ("SessionEnd", 5, true),
                 ("Notification", 86400, false),
                 ("PreCompact", 5, true),
+            ],
+            versionedEvents: [
+                "PermissionDenied": "2.1.89",
+                "PostToolUseFailure": "2.1.89",
             ]
         ),
         // Codex
@@ -417,6 +423,69 @@ struct ConfigInstaller {
         return json
     }
 
+    // MARK: - CLI Version Detection
+
+    /// Detect installed Claude Code version by running `claude --version`
+    private static var cachedClaudeVersion: String?
+    private static func detectClaudeVersion() -> String? {
+        if let cached = cachedClaudeVersion { return cached }
+        // Find claude binary — GUI apps don't inherit user's shell PATH
+        let candidates = [
+            NSHomeDirectory() + "/.local/bin/claude",
+            "/usr/local/bin/claude",
+        ]
+        guard let claudePath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            return nil
+        }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: claudePath)
+        proc.arguments = ["--version"]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                // Parse "2.1.92 (Claude Code)" → "2.1.92"
+                let version = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .components(separatedBy: " ").first ?? ""
+                if !version.isEmpty { cachedClaudeVersion = version }
+                return cachedClaudeVersion
+            }
+        } catch {}
+        return nil
+    }
+
+    /// Compare semver strings: returns true if `installed` >= `required`
+    static func versionAtLeast(_ installed: String, _ required: String) -> Bool {
+        let i = installed.split(separator: ".").compactMap { Int($0) }
+        let r = required.split(separator: ".").compactMap { Int($0) }
+        for idx in 0..<max(i.count, r.count) {
+            let iv = idx < i.count ? i[idx] : 0
+            let rv = idx < r.count ? r[idx] : 0
+            if iv > rv { return true }
+            if iv < rv { return false }
+        }
+        return true // equal
+    }
+
+    /// Filter events based on installed CLI version
+    private static func compatibleEvents(for cli: CLIConfig) -> [(String, Int, Bool)] {
+        guard !cli.versionedEvents.isEmpty else { return cli.events }
+
+        // Only Claude Code needs version checking for now
+        guard cli.source == "claude" else { return cli.events }
+        let version = detectClaudeVersion()
+
+        return cli.events.filter { (event, _, _) in
+            guard let minVer = cli.versionedEvents[event] else { return true }
+            guard let version else { return false } // can't detect version → skip risky events
+            return versionAtLeast(version, minVer)
+        }
+    }
+
     // MARK: - Claude Code (special: uses hook script)
 
     private static func installClaudeHooks(cli: CLIConfig, fm: FileManager) -> Bool {
@@ -431,8 +500,9 @@ struct ConfigInstaller {
         }
 
         var hooks = settings[cli.configKey] as? [String: Any] ?? [:]
+        let events = compatibleEvents(for: cli)
 
-        let alreadyInstalled = cli.events.allSatisfy { (event, _, _) in
+        let alreadyInstalled = events.allSatisfy { (event, _, _) in
             guard let entries = hooks[event] as? [[String: Any]] else { return false }
             return entries.contains { entry in
                 guard let hookList = entry["hooks"] as? [[String: Any]] else { return false }
@@ -441,10 +511,17 @@ struct ConfigInstaller {
         }
         if alreadyInstalled && !hasStaleAsyncKey(hooks) { return true }
 
-        for (event, timeout, _) in cli.events {
-            var eventHooks = hooks[event] as? [[String: Any]] ?? []
-            eventHooks.removeAll { containsOurHook($0) }
+        // Remove all our hooks first (including any versioned events from a previous install)
+        for key in hooks.keys {
+            if var entries = hooks[key] as? [[String: Any]] {
+                entries.removeAll { containsOurHook($0) }
+                hooks[key] = entries.isEmpty ? nil : entries
+            }
+        }
 
+        // Re-install only compatible events
+        for (event, timeout, _) in events {
+            var eventHooks = hooks[event] as? [[String: Any]] ?? []
             let hookEntry: [String: Any] = [
                 "type": "command", "command": hookCommand, "timeout": timeout,
             ]
