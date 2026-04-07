@@ -1,5 +1,21 @@
 # Changelog
 
+## [v1.0.8] - 2026-04-07
+
+### English
+- Add GitHub Copilot CLI support as the 9th AI tool
+- Allow horizontal drag of panel along the menu bar (Settings → General)
+- Horizontal-only drag with no vertical jitter, 5px threshold to prevent accidental drag
+- Reset panel to center when drag toggle is turned off
+- Update mascot gif backgrounds to white for better README readability
+
+### 中文
+- 新增 GitHub Copilot CLI 支持（第 9 个 AI 工具）
+- 允许沿菜单栏水平拖动面板（设置 → 通用）
+- 仅水平拖动无垂直抖动，5px 阈值防误触
+- 关闭拖动开关时面板自动归位居中
+- 更新吉祥物 gif 为白色背景，提升 README 可读性
+
 ## [v1.0.7] - 2026-04-07
 
 ### English
