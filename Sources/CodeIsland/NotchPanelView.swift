@@ -1205,7 +1205,7 @@ private struct SessionCard: View {
                                 Text(">")
                                     .font(.system(size: fontSize, weight: .bold, design: .monospaced))
                                     .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
-                                Text(inlineMarkdown(msg.text))
+                                Text(renderUserText(msg.text))
                                     .font(.system(size: fontSize, weight: .medium, design: .monospaced))
                                     .foregroundStyle(.white.opacity(0.9))
                                     .lineLimit(1)
@@ -1277,7 +1277,11 @@ private struct SessionCard: View {
     }
 
     private func renderMarkdown(_ text: String) -> AttributedString {
-        inlineMarkdown(text)
+        ChatMessageTextFormatter.inlineMarkdown(text)
+    }
+
+    private func renderUserText(_ text: String) -> AttributedString {
+        ChatMessageTextFormatter.literalText(text)
     }
 
     private func timeAgo(_ date: Date) -> String {
@@ -1800,6 +1804,15 @@ private func inlineMarkdown(_ text: String) -> AttributedString {
     return result
 }
 
+/// Generate a short session ID with better disambiguation.
+private func shortSessionId(_ id: String) -> String {
+    let clean = id.replacingOccurrences(of: "-", with: "")
+    if clean.count >= 8 {
+        return String(clean.suffix(4))
+    }
+    return String(id.prefix(4))
+}
+
 /// Strip internal directives (::code-comment{}, ::git-*{}, etc.) from message text
 /// so they don't leak into the UI preview.
 private func stripDirectives(_ text: String) -> String {
@@ -1842,14 +1855,3 @@ private func stripDirectives(_ text: String) -> String {
     return cleaned
 }
 
-/// Generate a short session ID with better disambiguation.
-/// For time-ordered UUIDs (e.g. Codex "019d631e-73d9-..."), the high bits are
-/// timestamps that barely differ within a day. Use last 4 chars of the UUID
-/// instead of the first 4 for better uniqueness.
-private func shortSessionId(_ id: String) -> String {
-    let clean = id.replacingOccurrences(of: "-", with: "")
-    if clean.count >= 8 {
-        return String(clean.suffix(4))
-    }
-    return String(id.prefix(4))
-}
