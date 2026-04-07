@@ -1,22 +1,73 @@
 import AppKit
 
 struct ScreenDetector {
+    struct Candidate {
+        let frame: CGRect
+        let hasNotch: Bool
+        let isMain: Bool
+    }
+
     /// Simulated notch width for non-notch screens — scales with screen width
     private static func fakeNotchWidth(for screen: NSScreen) -> CGFloat {
         let screenW = screen.frame.width
         return min(max(screenW * 0.14, 160), 240)
     }
 
-    /// Preferred screen: built-in (notch) first, then main
-    static var preferredScreen: NSScreen {
-        if #available(macOS 12.0, *) {
-            for screen in NSScreen.screens {
-                if screen.auxiliaryTopLeftArea != nil || screen.auxiliaryTopRightArea != nil {
-                    return screen
+    static func autoPreferredIndex(candidates: [Candidate], activeWindowBounds: CGRect?) -> Int? {
+        guard !candidates.isEmpty else { return nil }
+
+        if let activeWindowBounds {
+            let center = CGPoint(x: activeWindowBounds.midX, y: activeWindowBounds.midY)
+            if let index = candidates.firstIndex(where: { $0.frame.contains(center) }) {
+                return index
+            }
+
+            let bestOverlap = candidates.enumerated()
+                .map { offset, candidate in
+                    (offset, overlapArea(lhs: candidate.frame, rhs: activeWindowBounds))
                 }
+                .max { lhs, rhs in lhs.1 < rhs.1 }
+
+            if let bestOverlap, bestOverlap.1 > 0 {
+                return bestOverlap.0
             }
         }
-        return NSScreen.main ?? NSScreen.screens.first ?? NSScreen()
+
+        if let notchIndex = candidates.firstIndex(where: \.hasNotch) {
+            return notchIndex
+        }
+
+        if let mainIndex = candidates.firstIndex(where: \.isMain) {
+            return mainIndex
+        }
+
+        return candidates.indices.first
+    }
+
+    /// Preferred screen: active work screen first, then built-in (notch), then main
+    static var preferredScreen: NSScreen {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else {
+            return NSScreen.main ?? NSScreen()
+        }
+
+        let mainScreen = NSScreen.main
+        let candidates = screens.map { screen in
+            Candidate(
+                frame: screen.frame,
+                hasNotch: screenHasNotch(screen),
+                isMain: mainScreen == screen
+            )
+        }
+
+        if let index = autoPreferredIndex(
+            candidates: candidates,
+            activeWindowBounds: frontmostApplicationWindowBounds()
+        ), index < screens.count {
+            return screens[index]
+        }
+
+        return mainScreen ?? screens.first ?? NSScreen()
     }
 
     static var hasNotch: Bool {
@@ -70,5 +121,58 @@ struct ScreenDetector {
             }
         }
         return fakeNotchWidth(for: screen)
+    }
+
+    static func signature(for screen: NSScreen) -> String {
+        let frame = screen.frame.integral
+        return "\(Int(frame.origin.x)):\(Int(frame.origin.y)):\(Int(frame.width)):\(Int(frame.height))"
+    }
+
+    private static func overlapArea(lhs: CGRect, rhs: CGRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        guard !intersection.isNull, !intersection.isEmpty else { return 0 }
+        return intersection.width * intersection.height
+    }
+
+    private static func frontmostApplicationWindowBounds() -> CGRect? {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication else { return nil }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let preferredPID: pid_t? = frontApp.processIdentifier == ownPID ? nil : frontApp.processIdentifier
+
+        guard let windowList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return nil
+        }
+
+        for window in windowList {
+            guard let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+                  let layer = window[kCGWindowLayer as String] as? Int,
+                  layer == 0,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  rect.width > 0,
+                  rect.height > 0 else { continue }
+            guard pid != ownPID else { continue }
+            if let preferredPID, pid != preferredPID { continue }
+            return rect
+        }
+
+        guard preferredPID != nil else { return nil }
+
+        for window in windowList {
+            guard let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+                  pid != ownPID,
+                  let layer = window[kCGWindowLayer as String] as? Int,
+                  layer == 0,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  rect.width > 0,
+                  rect.height > 0 else { continue }
+            return rect
+        }
+
+        return nil
     }
 }
