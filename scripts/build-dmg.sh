@@ -46,7 +46,20 @@ lipo -create "$ARM_DIR/codeisland-bridge" "$X86_DIR/codeisland-bridge" \
 sed -e "s/<string>1\.0\.6<\/string>/<string>${VERSION}<\/string>/g" \
     "$REPO_ROOT/Info.plist" > "$CONTENTS_DIR/Info.plist"
 
-# Copy pre-built app icon (actool + AppIcon.icon format unreliable on CI)
+# Compile asset catalog + icon (generates Assets.car for SwiftUI window styling)
+xcrun actool \
+    --output-format human-readable-text \
+    --notices --warnings --errors \
+    --platform macosx \
+    --target-device mac \
+    --minimum-deployment-target 14.0 \
+    --app-icon AppIcon \
+    --output-partial-info-plist /dev/null \
+    --compile "$CONTENTS_DIR/Resources" \
+    "$REPO_ROOT/Assets.xcassets" \
+    "$REPO_ROOT/AppIcon.icon"
+
+# Overwrite with pre-built icns (actool may not produce icns on all CI environments)
 cp "$REPO_ROOT/Sources/CodeIsland/Resources/AppIcon.icns" "$CONTENTS_DIR/Resources/AppIcon.icns"
 
 # Copy SPM resource bundles at .app root where Bundle.module expects them
