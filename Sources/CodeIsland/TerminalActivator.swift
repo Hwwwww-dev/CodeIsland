@@ -111,7 +111,8 @@ struct TerminalActivator {
             return
         }
 
-        if lower.contains("terminal") || lower.contains("apple_terminal") {
+        // Match Terminal.app by bundle ID only — Warp sets TERM_PROGRAM=Apple_Terminal
+        if session.termBundleId == "com.apple.Terminal" || (session.termBundleId == nil && lower == "terminal") {
             activateTerminalApp(ttyPath: effectiveTty, cwd: session.cwd)
             return
         }
