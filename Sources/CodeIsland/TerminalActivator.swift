@@ -153,30 +153,25 @@ struct TerminalActivator {
         var tmuxSession = ""
         if let pane = tmuxPane?.trimmingCharacters(in: .whitespacesAndNewlines),
            !pane.isEmpty,
-           let tmuxBin = findBinary("tmux"),
-           let data = runProcess(
-                tmuxBin,
-                args: ["display-message", "-p", "-t", pane, "-F", "#{session_name}:#{window_index}:#{window_name}"],
-                env: tmuxProcessEnv(tmuxEnv)
-           ),
-           let key = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !key.isEmpty {
-            tmuxKey = key
-            // Also store session name only (tmuxcc-style), which is more robust across title formats.
-            if let first = key.split(separator: ":").first {
-                tmuxSession = String(first)
+           let tmuxBin = findBinary("tmux") {
+            // Try full key first, fall back to session name only
+            let formats = [
+                "#{session_name}:#{window_index}:#{window_name}",
+                "#{session_name}",
+            ]
+            for fmt in formats {
+                if let data = runProcess(tmuxBin, args: ["display-message", "-p", "-t", pane, "-F", fmt], env: tmuxProcessEnv(tmuxEnv)),
+                   let result = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !result.isEmpty {
+                    if fmt.contains("window_index") {
+                        tmuxKey = result
+                        if let first = result.split(separator: ":").first { tmuxSession = String(first) }
+                    } else {
+                        tmuxSession = result
+                    }
+                    break
+                }
             }
-        } else if let pane = tmuxPane?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !pane.isEmpty,
-                  let tmuxBin = findBinary("tmux"),
-                  let data = runProcess(
-                    tmuxBin,
-                    args: ["display-message", "-p", "-t", pane, "-F", "#{session_name}"],
-                    env: tmuxProcessEnv(tmuxEnv)
-                  ),
-                  let s = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !s.isEmpty {
-            tmuxSession = s
         }
 
         // Normalize CWD variants:
