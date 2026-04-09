@@ -254,7 +254,7 @@ Claude Code 特殊：通过 hook script（shell dispatcher）调用 bridge，其
 `primarySource` 返回最高优先级 session 的 source，用于选择显示 Clawd 还是 Dex。
 
 ## 已知问题
-1. **AppleScript 权限** — 每次 rebuild 失效 (ad-hoc 签名)
+1. ~~**AppleScript 权限** — 每次 rebuild 失效~~ → **已修复**（v1.0.16，Developer ID 签名）
 2. **Codex 进程发现** — 启动时扫描逻辑存在但实测不稳定，主要依赖 hooks
 3. **CodeBuddy Stop 无回复** — Stop 事件不带 AI 回复内容，显示占位符
 4. **Cursor 无 SessionStart/SessionEnd** — session 由首次事件隐式创建，依赖 idle 清理
@@ -626,6 +626,45 @@ open .build/release/CodeIsland.app
 
 ---
 
+## 2026-04-09 会话改动记录 — 签名/公证 + Bug 修复 + 终端全面修复
+
+### 构建与分发
+
+1. **Developer ID 签名** (`build.sh`, `CodeIsland.entitlements`) — 自动检测 Developer ID Application 证书，fallback 到其他证书再到 ad-hoc。Hardened Runtime 启用。AppleScript 权限持久化，不再每次 rebuild 失效。
+2. **公证自动化** (`build.sh --notarize`) — 一条命令完成构建→签名→公证→DMG 制作。公证失败时检查结果并报错退出。DMG 也单独签名+公证。
+3. **资源 bundle 路径修复** (`BundleExtension.swift`) — SPM 资源从 `.app/` 根目录移到 `Contents/Resources/`（签名合规）。`Bundle.appModule` 优先查 `Contents/Resources/`，fallback 到 `Bundle.module`（开发构建）。
+4. **Homebrew Cask** — 自建 tap (`wxtsky/tap/codeisland`) CI 自动更新。官方 homebrew-cask 需等仓库满 30 天。cask 文件已预写在 `/opt/homebrew/Library/Taps/homebrew/homebrew-cask/Casks/c/codeisland.rb`。
+
+### Bug 修复
+
+5. **Hook exec 修复 (#41)** (`ConfigInstaller.swift`) — hook 脚本 `"$BRIDGE" "$@"` → `exec "$BRIDGE" "$@"`。原来 `getppid()` 返回短命 bash shell 的 PID，DispatchSource 监控 bash 退出后立即设 idle → 小人在 working/idle 间每 ~2 秒闪烁。`exec` 让 bridge 替换 bash，`getppid()` 返回真正的 CLI PID。版本 3→4 触发 `verifyAndRepair` 自动更新。
+6. **Warp 弹 Terminal.app (#40)** (`TerminalActivator.swift`) — Warp 的 `TERM_PROGRAM=Apple_Terminal`，跳转路由用 `lower.contains("terminal")` 匹配到了 Terminal.app 的 AppleScript。改为 bundle ID 精确匹配 `com.apple.Terminal`。
+7. **Session 卡片点击跳转 (#37)** (`NotchPanelView.swift`) — 整张 session 卡片用 `Button`（非 `onTapGesture`，NSPanel 不可靠转发 SwiftUI 手势事件）。删除 `TerminalJumpButton`（箭头按钮），改为 `TerminalBadge`（纯展示图标+名字）。删除 `ProjectNameLink` 的 tap-to-open-Finder 避免手势冲突。
+8. **Stuck 检测过激** (`AppState.swift`) — 有 monitor + 有 tool 的 session 跳过 stuck 检测（长 bash 不再误判）。无 tool + 有 monitor 120s 超时（API 超时/错误后 2 分钟自动恢复）。
+9. **Hover 展开闪烁** (`NotchPanelView.swift`) — expand timer Task 和 collapse timer 竞态，加 `isHovered` guard。
+
+### 智能抑制全面修复 (`TerminalVisibilityDetector.swift`)
+
+10. **App-level 检测** — `termBundleId` 有值时独占匹配，不 fallback 到 `TERM_PROGRAM`。修复 Warp（TERM_PROGRAM=Apple_Terminal）被误判为 Terminal.app frontmost 的问题。
+11. **Tab-level 路由** — 优先用 bundle ID 路由（精确），TERM_PROGRAM 作 fallback（不匹配 "terminal" 避免 Warp 误路由）。
+12. **所有 fallback 改 `false`** — 不确定时优先弹通知。iTerm2 删除 CWD fallback（只信 session ID）。Terminal.app 删除 CWD title fallback（只信 TTY）。kitty 删除 CWD fallback（只信 window ID）。
+13. **Ghostty 双重检查** — 窗口标题必须同时包含 dirName 和 source 关键词，减少同 CWD 不同 CLI 的假阳性。
+14. **WezTerm TTY 短路** — TTY 已知且不匹配时直接 return false，不再 fallback 到 CWD。
+15. **tmux/WezTerm/kitty guard fallback** — 全部从 `return true` 改为 `return false`。
+
+### PR #43 合并 — Ghostty tmux 跳转
+
+16. **tmuxEnv 字段** (`SessionSnapshot.swift`, `SessionPersistence.swift`) — 保存原始 `TMUX` 环境变量（socket 路径），tmux 命令能找到正确 server。
+17. **Ghostty tmux 匹配** (`TerminalActivator.swift`) — 优先用 tmux title prefix（`session:winIdx:winName`）匹配 Ghostty tab，CWD 归一化（symlink、tilde、trailing slash），`runOsaScript` 外部进程执行 AppleScript。
+18. **冗余 fallback 简化** — tmux key 获取从重复 if/else if 改为 format 数组循环。
+
+### 关键设计决策（新增）
+
+49. **NSPanel 中用 Button 不用 onTapGesture** — NSPanel 不可靠转发 SwiftUI gesture 事件，Button 作为 AppKit 控件正确参与 responder chain
+50. **App-level 检测 bundleId 独占** — 有 bundleId 时不 fallback 到 TERM_PROGRAM，避免 Warp 的 Apple_Terminal 假阳性
+51. **Stuck 检测四象限** — 有 tool+有 monitor 不限时（信任进程退出）、无 tool+有 monitor 120s（API 超时兜底）、有 tool+无 monitor 180s、无 tool+无 monitor 60s
+52. **Hook script exec** — bridge 替换 bash 进程，getppid() 返回真正的 CLI PID，不是短命 shell PID
+
 ## 2026-04-08 会话改动记录
 
 本次会话对标了 xmqywx/CodeIsland、erha19/ping-island、jackson-storm/DynamicNotch、sk-ruban/notchi 等同类项目，提取了实用改进并修复了已知问题。
@@ -641,7 +680,7 @@ open .build/release/CodeIsland.app
 ### Session 监控加固
 
 6. **PID 存活验证** (`AppState.swift: cleanupIdleSessions`) — 每 30s（原 60s）用 `kill(pid, 0)` 验证所有被监控 PID 是否还活着，DispatchSourceProcess 静默失效时也能发现。
-7. **所有 session 都做 stuck 检测** — 移除了 "有 monitor 就跳过" 的逻辑。按 (hasTool, hasMonitor) 四象限分层：60s/120s/180s/300s。
+7. **Stuck 检测四象限** — 按 (hasTool, hasMonitor) 分层：无tool无monitor 60s / 有tool无monitor 180s / 无tool有monitor 120s / 有tool有monitor 不限。有 monitor 且有 tool 时完全信任进程退出。
 8. **无 monitor 有 PID 的 session 也做存活检查** — 覆盖 Gemini/Cursor 等 CLI 有 PID 但 monitor 建立失败的场景。
 9. **进程退出时立即重置状态** (`handleProcessExit`) — 不再等 5s grace period 期间显示陈旧的 "running Edit"，立即 idle + drain pending。
 
