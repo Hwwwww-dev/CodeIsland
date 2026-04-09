@@ -3,7 +3,7 @@ import ServiceManagement
 
 enum AppVersion {
     /// Update this each release. Used as fallback when Info.plist is unavailable (debug builds).
-    static let fallback = "1.0.15"
+    static let fallback = "1.0.17"
 
     static var current: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? fallback
@@ -52,6 +52,9 @@ enum SettingsKey {
     // Custom sound paths (keyed by sound name, e.g. "soundCustomPath_8bit_start")
     static func soundCustomPath(_ soundName: String) -> String { "soundCustomPath_\(soundName)" }
 
+    // Session rotation
+    static let rotationInterval = "rotationInterval"
+
     // Advanced
     static let maxToolHistory = "maxToolHistory"
 
@@ -91,6 +94,8 @@ struct SettingsDefaults {
     static let soundPromptSubmit = false
     static let soundBoot = true
 
+    static let rotationInterval = 5
+
     static let maxToolHistory = 20
 
     static let mascotSpeed = 100  // percentage: 0–300, 0 = silent
@@ -129,6 +134,7 @@ class SettingsManager {
             SettingsKey.soundApprovalNeeded: SettingsDefaults.soundApprovalNeeded,
             SettingsKey.soundPromptSubmit: SettingsDefaults.soundPromptSubmit,
             SettingsKey.soundBoot: SettingsDefaults.soundBoot,
+            SettingsKey.rotationInterval: SettingsDefaults.rotationInterval,
             SettingsKey.maxToolHistory: SettingsDefaults.maxToolHistory,
             SettingsKey.mascotSpeed: SettingsDefaults.mascotSpeed,
             SettingsKey.sessionGroupingMode: SettingsDefaults.sessionGroupingMode,
@@ -206,6 +212,11 @@ class SettingsManager {
     var maxToolHistory: Int {
         get { defaults.integer(forKey: SettingsKey.maxToolHistory) }
         set { defaults.set(newValue, forKey: SettingsKey.maxToolHistory) }
+    }
+
+    var rotationInterval: Int {
+        get { defaults.integer(forKey: SettingsKey.rotationInterval) }
+        set { defaults.set(newValue, forKey: SettingsKey.rotationInterval) }
     }
 
     var sessionGroupingMode: String {

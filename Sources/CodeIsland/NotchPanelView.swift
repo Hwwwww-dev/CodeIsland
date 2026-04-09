@@ -472,13 +472,13 @@ private struct CompactToolStatus: View {
         return trimmed
     }
 
-    /// Whether there's any activity worth showing (tool running or thinking)
-    private var hasActivity: Bool { shownTool != nil || displayStatus == .processing }
+    /// Whether the current session is doing any work (not idle)
+    private var isWorking: Bool { displayStatus != .idle }
 
     var body: some View {
         HStack(spacing: 5) {
-            // Project name — only shown when there's tool activity
-            if hasActivity, let project = projectName {
+            // Project name — shown whenever the session is not idle
+            if isWorking, let project = projectName {
                 Text(project)
                     .foregroundStyle(.white.opacity(0.8))
                     .id("center-project-\(displaySessionId ?? "")")

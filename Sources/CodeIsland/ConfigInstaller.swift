@@ -4,9 +4,10 @@ import Foundation
 
 private enum HookId {
     static let current = "codeisland"
-    static let legacy = "vibenotch"
+    static let legacyNames = ["vibenotch", "vibe-island", "vibeisland"]
     static func isOurs(_ s: String) -> Bool {
-        s.contains(current) || s.contains(legacy)
+        let lower = s.lowercased()
+        return lower.contains(current) || legacyNames.contains(where: lower.contains)
     }
 }
 
@@ -530,13 +531,8 @@ struct ConfigInstaller {
         }
         if alreadyInstalled && !hasStaleAsyncKey(hooks) { return true }
 
-        // Remove all our hooks first (including any versioned events from a previous install)
-        for key in hooks.keys {
-            if var entries = hooks[key] as? [[String: Any]] {
-                entries.removeAll { containsOurHook($0) }
-                hooks[key] = entries.isEmpty ? nil : entries
-            }
-        }
+        // Remove all managed hooks first, including legacy Vibe Island entries.
+        hooks = removeManagedHookEntries(from: hooks)
 
         // Re-install only compatible events
         for (event, timeout, _) in events {
@@ -661,15 +657,7 @@ struct ConfigInstaller {
         guard var root = parseJSONFile(at: cli.fullPath, fm: fm),
               var hooks = root[cli.configKey] as? [String: Any] else { return }
 
-        for (event, value) in hooks {
-            guard var entries = value as? [[String: Any]] else { continue }
-            entries.removeAll { containsOurHook($0) }
-            if entries.isEmpty {
-                hooks.removeValue(forKey: event)
-            } else {
-                hooks[event] = entries
-            }
-        }
+        hooks = removeManagedHookEntries(from: hooks)
 
         root[cli.configKey] = hooks.isEmpty ? nil : hooks
         if let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) {
@@ -678,6 +666,20 @@ struct ConfigInstaller {
     }
 
     // MARK: - Detection helpers
+
+    static func removeManagedHookEntries(from hooks: [String: Any]) -> [String: Any] {
+        var cleaned = hooks
+        for (event, value) in cleaned {
+            guard var entries = value as? [[String: Any]] else { continue }
+            entries.removeAll { containsOurHook($0) }
+            if entries.isEmpty {
+                cleaned.removeValue(forKey: event)
+            } else {
+                cleaned[event] = entries
+            }
+        }
+        return cleaned
+    }
 
     private static func isHooksInstalled(for cli: CLIConfig, fm: FileManager) -> Bool {
         guard let root = parseJSONFile(at: cli.fullPath, fm: fm),

@@ -187,6 +187,7 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.smartSuppress) private var smartSuppress = SettingsDefaults.smartSuppress
     @AppStorage(SettingsKey.collapseOnMouseLeave) private var collapseOnMouseLeave = SettingsDefaults.collapseOnMouseLeave
     @AppStorage(SettingsKey.sessionTimeout) private var sessionTimeout = SettingsDefaults.sessionTimeout
+    @AppStorage(SettingsKey.rotationInterval) private var rotationInterval = SettingsDefaults.rotationInterval
     @AppStorage(SettingsKey.maxToolHistory) private var maxToolHistory = SettingsDefaults.maxToolHistory
 
     var body: some View {
@@ -228,6 +229,15 @@ private struct BehaviorPage: View {
                 } label: {
                     Text(l10n["session_cleanup"])
                     Text(l10n["session_cleanup_desc"])
+                }
+                Picker(selection: $rotationInterval) {
+                    Text(l10n["3_seconds"]).tag(3)
+                    Text(l10n["5_seconds"]).tag(5)
+                    Text(l10n["8_seconds"]).tag(8)
+                    Text(l10n["10_seconds"]).tag(10)
+                } label: {
+                    Text(l10n["rotation_interval"])
+                    Text(l10n["rotation_interval_desc"])
                 }
                 Picker(selection: $maxToolHistory) {
                     Text("10").tag(10)

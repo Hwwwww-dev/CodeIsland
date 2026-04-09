@@ -43,6 +43,7 @@ public struct SessionSnapshot {
     public var tmuxEnv: String?         // raw TMUX env var (socket info for non-default tmux server)
     public var termBundleId: String?    // __CFBundleIdentifier for precise terminal ID
     public var cliPid: pid_t?            // CLI process PID (from bridge _ppid)
+    public var cliStartTime: Date?       // Start time of the tracked CLI PID (guards PID reuse)
     public var source: String = "claude" // "claude" or "codex"
     public var interrupted: Bool = false
     public var sessionTitle: String?
@@ -491,6 +492,7 @@ public func reduceEvent(
         if let model = event.rawJSON["model"] as? String, !model.isEmpty { sessions[sessionId]?.model = model }
         if let ppid = event.rawJSON["_ppid"] as? Int, ppid > 0 {
             sessions[sessionId]?.cliPid = pid_t(ppid)
+            sessions[sessionId]?.cliStartTime = nil
         }
         if let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) {
             sessions[sessionId]?.source = source
@@ -629,6 +631,7 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
     }
     if let ppid = event.rawJSON["_ppid"] as? Int, ppid > 0 {
         sessions[sessionId]?.cliPid = pid_t(ppid)
+        sessions[sessionId]?.cliStartTime = nil
     }
     if let source = SessionSnapshot.normalizedSupportedSource(event.rawJSON["_source"] as? String) {
         sessions[sessionId]?.source = source
