@@ -1,6 +1,7 @@
 import SwiftUI
 import CoreServices
 import os.log
+import SQLite3
 import CodeIslandCore
 
 private let log = Logger(subsystem: "com.codeisland", category: "AppState")
@@ -33,6 +34,7 @@ final class AppState {
     /// Mouse must enter the panel before auto-collapse is allowed (prevents instant dismiss)
     var completionHasBeenEntered = false
     private var processMonitors: [String: (source: DispatchSourceProcess, pid: pid_t)] = [:]
+    private var exitingSessions: [String: pid_t] = [:]
     private var saveTimer: Timer?
     private var fsEventStream: FSEventStreamRef?
     private var lastFSScanTime: Date = .distantPast
@@ -50,7 +52,7 @@ final class AppState {
     private var rotationTimer: Timer?
 
     private func startCleanupTimer() {
-        cleanupTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        cleanupTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.cleanupIdleSessions()
             }
@@ -77,33 +79,28 @@ final class AppState {
             }
         }
         for sessionId in deadMonitors {
-            // PID gone but monitor didn't fire — tear down stale monitor and clean up
-            stopMonitor(sessionId)
-            if sessions[sessionId]?.status != .idle {
-                sessions[sessionId]?.status = .idle
-                sessions[sessionId]?.currentTool = nil
-                sessions[sessionId]?.toolDescription = nil
-            }
+            // PID gone but monitor didn't fire — treat as process exit so session is removed
+            // promptly (after 5s grace) instead of lingering for 10 minutes.
+            let pid = processMonitors[sessionId]?.pid ?? 0
+            handleProcessExit(sessionId: sessionId, exitedPid: pid)
         }
         for (sessionId, pid) in orphaned {
             kill(pid, SIGTERM)
             removeSession(sessionId)
         }
 
-        // 2. Reset stuck sessions.
+        // 2. Reset likely-stuck sessions only when we have no process monitor.
+        //    If the process is still monitored/alive, trust explicit Stop/SessionEnd or
+        //    process exit instead of synthesizing idle and risking false-idle mid-thought.
         //    - No tool + no monitor: 60s (likely lost Stop event)
-        //    - Has tool + no monitor: 180s (long build or deep thinking)
-        //    - No tool + has monitor: 120s (process alive but stuck — API timeout/error)
-        //    - Has tool + has monitor: skip (tool genuinely running, trust process exit)
-        for (key, session) in sessions where session.status != .idle && session.status != .waitingApproval && session.status != .waitingQuestion {
-            let hasMonitor = processMonitors[key] != nil
-            let hasTool = session.currentTool != nil
-            if hasMonitor && hasTool { continue }
+        //    - Has tool + no monitor: 180s (long build / deep thinking with missed exit)
+        for (key, session) in sessions
+            where processMonitors[key] == nil
+            && session.status != .idle
+            && session.status != .waitingApproval
+            && session.status != .waitingQuestion {
             let elapsed = -session.lastActivity.timeIntervalSinceNow
-            let threshold: TimeInterval
-            if hasMonitor { threshold = 120 }       // process alive, no tool — likely stuck
-            else if hasTool { threshold = 180 }     // no monitor, tool running — long build
-            else { threshold = 60 }                 // no monitor, no tool — lost Stop
+            let threshold: TimeInterval = session.currentTool != nil ? 180 : 60
             if elapsed > threshold {
                 sessions[key]?.status = .idle
                 sessions[key]?.currentTool = nil
@@ -112,12 +109,16 @@ final class AppState {
         }
 
         // 3. Verify PID liveness for sessions without monitors but with a known PID.
-        //    If the process died, mark idle immediately rather than waiting for timeout.
-        for (key, session) in sessions where session.status != .idle && processMonitors[key] == nil {
+        //    If the process died: idle sessions are removed directly (no grace needed),
+        //    non-idle sessions go through handleProcessExit for the 5s grace period.
+        for (key, session) in sessions where processMonitors[key] == nil {
             if let pid = session.cliPid, pid > 0, kill(pid, 0) != 0, errno == ESRCH {
-                sessions[key]?.status = .idle
-                sessions[key]?.currentTool = nil
-                sessions[key]?.toolDescription = nil
+                if exitingSessions[key] == pid { continue }
+                if session.status == .idle {
+                    removeSession(key)
+                } else {
+                    handleProcessExit(sessionId: key, exitedPid: pid)
+                }
             }
         }
 
@@ -153,6 +154,15 @@ final class AppState {
         }
         source.resume()
         processMonitors[sessionId] = (source: source, pid: pid)
+        exitingSessions.removeValue(forKey: sessionId)
+
+        // Keep cliPid aligned with the monitored process unless we already have a different
+        // live PID from a stronger source (hooks beat heuristic discovery).
+        let currentPid = sessions[sessionId]?.cliPid ?? 0
+        let currentAlive = currentPid > 0 && kill(currentPid, 0) == 0
+        if !currentAlive || currentPid == pid {
+            sessions[sessionId]?.cliPid = pid
+        }
 
         // Safety: if process already exited before monitor started
         if kill(pid, 0) != 0 && errno == ESRCH {
@@ -165,6 +175,19 @@ final class AppState {
     private func handleProcessExit(sessionId: String, exitedPid: pid_t) {
         // Tear down the dead monitor immediately
         stopMonitor(sessionId)
+
+        // If the session already moved to a replacement live PID, reattach immediately and
+        // avoid flashing idle because a stale/wrong monitor exited.
+        if let currentPid = sessions[sessionId]?.cliPid,
+           currentPid > 0, currentPid != exitedPid, kill(currentPid, 0) == 0 {
+            monitorProcess(sessionId: sessionId, pid: currentPid)
+            return
+        }
+
+        if exitingSessions[sessionId] == exitedPid {
+            return
+        }
+        exitingSessions[sessionId] = exitedPid
 
         // If session was actively doing something, reset state right away so the UI
         // doesn't show a stale "running Edit" while we wait through the grace period.
@@ -182,13 +205,34 @@ final class AppState {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             guard let self = self, self.sessions[sessionId] != nil else { return }
+            guard self.exitingSessions[sessionId] == exitedPid else { return }
 
             // A new monitor was attached during the grace period (new process took over)
             if self.processMonitors[sessionId] != nil { return }
 
-            // Session received fresh activity during the grace period — still alive
+            // Session was taken over by a different process (e.g. auto-update/restart):
+            // cliPid changed to a new PID that's still alive → attach monitor, don't remove.
+            if let currentPid = self.sessions[sessionId]?.cliPid,
+               currentPid != exitedPid, currentPid > 0, kill(currentPid, 0) == 0 {
+                self.monitorProcess(sessionId: sessionId, pid: currentPid)
+                return
+            }
+
+            // Original process confirmed dead — remove regardless of lastActivity.
+            // This prevents a race where an in-flight hook event (e.g. "Stop") updates
+            // lastActivity after exitTime, causing the session to linger for 10+ minutes.
+            if kill(exitedPid, 0) != 0 {
+                self.removeSession(sessionId)
+                return
+            }
+
+            // Session received fresh activity during the grace period and the original PID is
+            // still alive — the exit signal was stale/spurious, so restore monitoring.
             if let lastActivity = self.sessions[sessionId]?.lastActivity,
-               lastActivity > exitTime { return }
+               lastActivity > exitTime {
+                self.monitorProcess(sessionId: sessionId, pid: exitedPid)
+                return
+            }
 
             self.removeSession(sessionId)
         }
@@ -212,6 +256,8 @@ final class AppState {
         }
         sessions.removeValue(forKey: sessionId)
         stopMonitor(sessionId)
+        exitingSessions.removeValue(forKey: sessionId)
+        modelReadAttempted.remove(sessionId)
         if activeSessionId == sessionId {
             activeSessionId = mostActiveSessionId()
         }
@@ -289,34 +335,80 @@ final class AppState {
     }
 
     /// Start monitoring the CLI process for a session.
-    /// Prefers the PID captured by the bridge (_ppid), falls back to scanning for Claude processes by CWD.
+    /// Prefers the PID captured by the bridge (_ppid), falls back to source-aware process scans by CWD.
     private func tryMonitorSession(_ sessionId: String) {
-        guard processMonitors[sessionId] == nil else { return }
+        let currentMonitorPid = processMonitors[sessionId]?.pid
 
         // Primary: use PID from bridge (works for any CLI)
         if let pid = sessions[sessionId]?.cliPid, pid > 0, kill(pid, 0) == 0 {
+            if currentMonitorPid == pid { return }
+            if currentMonitorPid != nil {
+                stopMonitor(sessionId)
+            }
             monitorProcess(sessionId: sessionId, pid: pid)
             return
         }
 
-        // Fallback: scan for Claude Code processes by CWD
+        if let currentMonitorPid, currentMonitorPid > 0, kill(currentMonitorPid, 0) == 0 {
+            sessions[sessionId]?.cliPid = currentMonitorPid
+            return
+        }
+
+        // Fallback: scan for matching processes by CWD (source-aware)
         guard let cwd = sessions[sessionId]?.cwd else { return }
+        let source = sessions[sessionId]?.source
         Task.detached {
-            let pid = Self.findPidForCwd(cwd)
+            let pid = Self.findPidForCwd(cwd, source: source)
             await MainActor.run { [weak self] in
                 guard let self = self, let pid = pid,
                       self.sessions[sessionId] != nil else { return }
-                self.monitorProcess(sessionId: sessionId, pid: pid)
+                let preferredPid: pid_t
+                if let currentPid = self.sessions[sessionId]?.cliPid,
+                   currentPid > 0, kill(currentPid, 0) == 0 {
+                    preferredPid = currentPid
+                } else {
+                    preferredPid = pid
+                    self.sessions[sessionId]?.cliPid = pid
+                }
+
+                if let monitorPid = self.processMonitors[sessionId]?.pid,
+                   monitorPid == preferredPid, kill(monitorPid, 0) == 0 {
+                    return
+                }
+
+                if self.processMonitors[sessionId] != nil {
+                    self.stopMonitor(sessionId)
+                }
+                self.monitorProcess(sessionId: sessionId, pid: preferredPid)
             }
         }
     }
 
-    /// Find a Claude process PID by matching CWD
-    private nonisolated static func findPidForCwd(_ cwd: String) -> pid_t? {
-        for pid in findClaudePids() {
+    /// Find a CLI process PID by matching CWD, scoped to the correct source.
+    /// Never guesses across sources: a missing/unknown source returns no PID instead of
+    /// accidentally binding a session to the wrong process family.
+    private nonisolated static func findPidForCwd(_ cwd: String, source: String? = nil) -> pid_t? {
+        guard let normalizedSource = SessionSnapshot.normalizedSupportedSource(source) else { return nil }
+        let pids = findPids(forSource: normalizedSource)
+        for pid in pids {
             if getCwd(for: pid) == cwd { return pid }
         }
         return nil
+    }
+
+    private nonisolated static func findPids(forSource source: String, candidatePids: [pid_t]? = nil) -> [pid_t] {
+        switch source {
+        case "claude":     return findClaudePids(candidatePids: candidatePids)
+        case "codex":      return findCodexPids(candidatePids: candidatePids)
+        case "gemini":     return findGeminiPids(candidatePids: candidatePids)
+        case "cursor":     return findCursorPids(candidatePids: candidatePids)
+        case "copilot":    return findCopilotPids(candidatePids: candidatePids)
+        case "qoder":      return findQoderPids(candidatePids: candidatePids)
+        case "droid":      return findFactoryPids(candidatePids: candidatePids)
+        case "codebuddy":  return findCodeBuddyPids(candidatePids: candidatePids)
+        case "opencode":   return findOpenCodePids(candidatePids: candidatePids)
+        default:           return []
+        }
     }
 
     private func enqueueCompletion(_ sessionId: String) {
@@ -548,9 +640,7 @@ final class AppState {
         case .playSound(let eventName):
             SoundManager.shared.handleEvent(eventName)
         case .tryMonitorSession(let sid):
-            if processMonitors[sid] == nil {
-                tryMonitorSession(sid)
-            }
+            tryMonitorSession(sid)
         case .stopMonitor(let sid):
             stopMonitor(sid)
         case .removeSession(let sid):
@@ -877,8 +967,6 @@ final class AppState {
     }
 
     // MARK: - Session Discovery (FSEventStream + process scan)
-
-    /// Start continuous monitoring: initial process scan + FSEventStream on ~/.claude/projects/
     // MARK: - Session Persistence
 
     private func scheduleSave() {
@@ -930,24 +1018,8 @@ final class AppState {
             }
             sessions[p.sessionId] = snapshot
             refreshProviderTitle(for: p.sessionId)
-            // Attach process monitor for exit detection, but keep status idle —
-            // actual status will be updated when the next hook event arrives.
-            if let pid = snapshot.cliPid, pid > 0, kill(pid, 0) == 0 {
-                monitorProcess(sessionId: p.sessionId, pid: pid)
-            } else {
-                // Async fallback: scan for Claude processes by CWD (monitor only)
-                let sid = p.sessionId
-                Task.detached {
-                    let pid = Self.findPidForCwd(snapshot.cwd ?? "")
-                    await MainActor.run { [weak self] in
-                        guard let self = self, let pid = pid,
-                              self.sessions[sid] != nil,
-                              self.processMonitors[sid] == nil else { return }
-                        self.monitorProcess(sessionId: sid, pid: pid)
-                        self.refreshDerivedState()
-                    }
-                }
-            }
+            // Reattach exit monitoring without changing the restored idle/running snapshot.
+            tryMonitorSession(p.sessionId)
         }
         SessionPersistence.clear()
         if activeSessionId == nil {
@@ -957,29 +1029,79 @@ final class AppState {
         refreshDerivedState()
     }
 
+    private nonisolated static func findDiscoveredSessions() -> [DiscoveredSession] {
+        let candidatePids = allProcessIds()
+        var discovered: [DiscoveredSession] = []
+        if ConfigInstaller.isEnabled(source: "claude") {
+            discovered.append(contentsOf: findActiveClaudeSessions(candidatePids: candidatePids))
+        }
+        if ConfigInstaller.isEnabled(source: "codex") {
+            discovered.append(contentsOf: findActiveCodexSessions(candidatePids: candidatePids))
+        }
+        if ConfigInstaller.isEnabled(source: "gemini") {
+            discovered.append(contentsOf: findActiveGeminiSessions(candidatePids: candidatePids))
+        }
+        if ConfigInstaller.isEnabled(source: "qoder") {
+            discovered.append(contentsOf: findActiveQoderSessions(candidatePids: candidatePids))
+        }
+        if ConfigInstaller.isEnabled(source: "codebuddy") {
+            discovered.append(contentsOf: findActiveCodeBuddySessions(candidatePids: candidatePids))
+        }
+        if ConfigInstaller.isEnabled(source: "droid") {
+            discovered.append(contentsOf: findActiveFactorySessions(candidatePids: candidatePids))
+        }
+        if ConfigInstaller.isEnabled(source: "cursor") {
+            discovered.append(contentsOf: findActiveCursorSessions(candidatePids: candidatePids))
+        }
+        if ConfigInstaller.isEnabled(source: "copilot") {
+            discovered.append(contentsOf: findActiveCopilotSessions(candidatePids: candidatePids))
+        }
+        if ConfigInstaller.isEnabled(source: "opencode") {
+            discovered.append(contentsOf: findActiveOpenCodeSessions(candidatePids: candidatePids))
+        }
+        return discovered
+    }
+
+    private nonisolated static func discoveryWatchRoots() -> [String] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates: [(String, String)] = [
+            ("claude", "\(home)/.claude/projects"),
+            ("codex", "\(home)/.codex/sessions"),
+            ("gemini", "\(home)/.gemini/tmp"),
+            ("qoder", "\(home)/.qoder/projects"),
+            ("codebuddy", "\(home)/.codebuddy/projects"),
+            ("droid", "\(home)/.factory/sessions"),
+            ("cursor", "\(home)/.cursor/projects"),
+            ("copilot", "\(home)/.copilot/session-state"),
+            ("opencode", "\(home)/.local/share/opencode"),
+        ]
+        let fm = FileManager.default
+        return candidates.compactMap { source, path in
+            guard ConfigInstaller.isEnabled(source: source), fm.fileExists(atPath: path) else { return nil }
+            return path
+        }
+    }
+
     func startSessionDiscovery() {
         startCleanupTimer()
         // Restore persisted sessions before process scan (deduped by scan)
         restoreSessions()
 
-        // Initial scan for already-running sessions (Claude + Codex), respecting user toggles
+        // Initial scan for already-running sessions, respecting per-source toggles.
         Task.detached {
-            let claudeSessions = ConfigInstaller.isEnabled(source: "claude") ? Self.findActiveClaudeSessions() : []
-            let codexSessions = ConfigInstaller.isEnabled(source: "codex") ? Self.findActiveCodexSessions() : []
+            let discovered = Self.findDiscoveredSessions()
             await MainActor.run { [weak self] in
-                self?.integrateDiscovered(claudeSessions)
-                self?.integrateDiscovered(codexSessions)
+                self?.integrateDiscovered(discovered)
             }
         }
-        // Start watching ~/.claude/projects/ for new session files
+        // Watch all known session-store roots so discovery keeps working when hooks are missed.
         startProjectsWatcher()
     }
 
-    /// FSEventStream on ~/.claude/projects/ — fires when .jsonl files are created/modified
+    /// FSEventStream on known session-store roots — fires when transcript/event files change.
     private func startProjectsWatcher() {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let projectsPath = "\(home)/.claude/projects"
-        guard FileManager.default.fileExists(atPath: projectsPath) else { return }
+        let watchRoots = Self.discoveryWatchRoots()
+        guard !watchRoots.isEmpty else { return }
 
         var context = FSEventStreamContext()
         context.info = Unmanaged.passUnretained(self).toOpaque()
@@ -989,11 +1111,11 @@ final class AppState {
             { (_, info, _, _, _, _) in
                 guard let info = info else { return }
                 let appState = Unmanaged<AppState>.fromOpaque(info).takeUnretainedValue()
-                // Debounce: re-scan Claude processes on filesystem change
+                // Debounce: re-scan known session stores on filesystem change.
                 appState.handleProjectsDirChange()
             },
             &context,
-            [projectsPath] as CFArray,
+            watchRoots as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             2.0,  // 2-second latency (coalesces rapid writes)
             FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes)
@@ -1003,10 +1125,10 @@ final class AppState {
         FSEventStreamSetDispatchQueue(stream, .main)
         FSEventStreamStart(stream)
         self.fsEventStream = stream
-        log.info("Projects watcher started on \(projectsPath)")
+        log.info("Discovery watcher started on \(watchRoots.joined(separator: ", "))")
     }
 
-    /// Called by FSEventStream when ~/.claude/projects/ changes (nonisolated for C callback compatibility)
+    /// Called by FSEventStream when a known session-store directory changes.
     nonisolated private func handleProjectsDirChange() {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
@@ -1014,11 +1136,9 @@ final class AppState {
             guard Date().timeIntervalSince(self.lastFSScanTime) > 3 else { return }
             self.lastFSScanTime = Date()
             Task.detached {
-                let claudeSessions = ConfigInstaller.isEnabled(source: "claude") ? Self.findActiveClaudeSessions() : []
-                let codexSessions = ConfigInstaller.isEnabled(source: "codex") ? Self.findActiveCodexSessions() : []
+                let discovered = Self.findDiscoveredSessions()
                 await MainActor.run { [weak self] in
-                    self?.integrateDiscovered(claudeSessions)
-                    self?.integrateDiscovered(codexSessions)
+                    self?.integrateDiscovered(discovered)
                 }
             }
         }
@@ -1028,13 +1148,24 @@ final class AppState {
     private func integrateDiscovered(_ discovered: [DiscoveredSession]) {
         var didAdd = false
         for info in discovered {
-            // Session already known — try to attach PID monitor if missing
+            // Session already known — try to update PID and attach monitor.
+            // Discovery PIDs are heuristic (matched by CWD), so when the session already
+            // has a known-good alive PID that differs from discovery, we trust the existing
+            // one for both cliPid and monitor to avoid cross-session contamination.
             if sessions[info.sessionId] != nil {
-                if processMonitors[info.sessionId] == nil, let pid = info.pid {
-                    monitorProcess(sessionId: info.sessionId, pid: pid)
-                    // Don't mark as processing — process being alive doesn't mean AI is working.
-                    // Status will be updated when the next hook event arrives.
+                if let pid = info.pid, pid > 0 {
+                    let existingPid = sessions[info.sessionId]?.cliPid ?? 0
+                    let existingAlive = existingPid > 0 && kill(existingPid, 0) == 0
+                    if existingAlive && existingPid != pid {
+                        // Existing PID is alive and different — discovery PID is unreliable.
+                    } else {
+                        // No existing PID, or it's dead, or it matches — safe to use discovery PID.
+                        if !existingAlive {
+                            sessions[info.sessionId]?.cliPid = pid
+                        }
+                    }
                 }
+                tryMonitorSession(info.sessionId)
                 refreshProviderTitle(for: info.sessionId, providerSessionId: info.sessionId)
                 continue
             }
@@ -1047,17 +1178,28 @@ final class AppState {
             let duplicateKey = sessions.first(where: { (_, existing) in
                 guard existing.source == info.source,
                       existing.cwd != nil, existing.cwd == info.cwd else { return false }
-                // If we have PIDs for both, they must match
+                // If we have PIDs for both and the existing one is still alive, they must match.
+                // Dead persisted PIDs should not block dedup / reattachment.
                 if let discoveredPid = info.pid, let existingPid = existing.cliPid,
-                   discoveredPid != existingPid { return false }
+                   discoveredPid != existingPid,
+                   existingPid > 0, kill(existingPid, 0) == 0 { return false }
                 return true
             })?.key
 
             if let existingKey = duplicateKey {
-                // Still attach PID monitor to the existing session if missing
-                if let pid = info.pid, processMonitors[existingKey] == nil {
-                    monitorProcess(sessionId: existingKey, pid: pid)
+                // Same guard as above: don't let unreliable discovery PID contaminate
+                // an existing session that has a known-good alive PID.
+                if let pid = info.pid, pid > 0 {
+                    let existingPid = sessions[existingKey]?.cliPid ?? 0
+                    let existingAlive = existingPid > 0 && kill(existingPid, 0) == 0
+                    if existingAlive && existingPid != pid {
+                    } else {
+                        if !existingAlive {
+                            sessions[existingKey]?.cliPid = pid
+                        }
+                    }
                 }
+                tryMonitorSession(existingKey)
                 refreshProviderTitle(for: existingKey, providerSessionId: info.sessionId)
                 continue
             }
@@ -1068,6 +1210,7 @@ final class AppState {
             session.ttyPath = info.tty
             session.recentMessages = info.recentMessages
             session.source = info.source
+            session.cliPid = info.pid
             session.providerSessionId = SessionTitleStore.supports(provider: info.source) ? info.sessionId : nil
             if let last = info.recentMessages.last(where: { $0.isUser }) {
                 session.lastUserPrompt = last.text
@@ -1077,9 +1220,7 @@ final class AppState {
             }
             sessions[info.sessionId] = session
             refreshProviderTitle(for: info.sessionId, providerSessionId: info.sessionId)
-            if let pid = info.pid {
-                monitorProcess(sessionId: info.sessionId, pid: pid)
-            }
+            tryMonitorSession(info.sessionId)
             didAdd = true
         }
         if didAdd && activeSessionId == nil {
@@ -1120,13 +1261,13 @@ final class AppState {
         let pid: pid_t?
         let modifiedAt: Date
         let recentMessages: [ChatMessage]
-        var source: String = "claude"  // "claude" or "codex"
+        var source: String = "claude"
     }
 
     /// Find running `claude` processes, match to transcript files, extract recent messages
-    private nonisolated static func findActiveClaudeSessions() -> [DiscoveredSession] {
+    private nonisolated static func findActiveClaudeSessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
         // Step 1: find running claude processes using native APIs
-        let claudePids = findClaudePids()
+        let claudePids = findClaudePids(candidatePids: candidatePids)
         guard !claudePids.isEmpty else { return [] }
 
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -1192,24 +1333,53 @@ final class AppState {
         return results
     }
 
-    /// Get PIDs of running Claude Code processes
-    /// Claude's binary is named by version (e.g. "2.1.91") under ~/.local/share/claude/versions/
-    private nonisolated static func findClaudePids() -> [pid_t] {
+    private nonisolated static func allProcessIds() -> [pid_t] {
         var bufferSize = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
         guard bufferSize > 0 else { return [] }
         var pids = [pid_t](repeating: 0, count: Int(bufferSize) / MemoryLayout<pid_t>.size + 10)
         bufferSize = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, bufferSize)
         let count = Int(bufferSize) / MemoryLayout<pid_t>.size
+        return Array(pids.prefix(count)).filter { $0 > 0 }
+    }
 
+    private nonisolated static func findPids(
+        matchingPathSubstrings pathSubstrings: [String],
+        argSubstrings: [String] = [],
+        candidatePids: [pid_t]? = nil
+    ) -> [pid_t] {
+        let loweredPaths = pathSubstrings.map { $0.lowercased() }
+        let loweredArgs = argSubstrings.map { $0.lowercased() }
+        guard !loweredPaths.isEmpty || !loweredArgs.isEmpty else { return [] }
+
+        var matched: [pid_t] = []
+        var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        for pid in candidatePids ?? allProcessIds() {
+            let len = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
+            guard len > 0 else { continue }
+            let path = String(cString: pathBuffer).lowercased()
+            if loweredPaths.contains(where: { path.contains($0) }) {
+                matched.append(pid)
+                continue
+            }
+            guard !loweredArgs.isEmpty,
+                  let args = getProcessArgs(pid)?.map({ $0.lowercased() }) else { continue }
+            if args.contains(where: { arg in loweredArgs.contains(where: { arg.contains($0) }) }) {
+                matched.append(pid)
+            }
+        }
+        return matched
+    }
+
+    /// Get PIDs of running Claude Code processes
+    /// Claude's binary is named by version (e.g. "2.1.91") under ~/.local/share/claude/versions/
+    private nonisolated static func findClaudePids(candidatePids: [pid_t]? = nil) -> [pid_t] {
         let claudeVersionsDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/share/claude/versions").path
 
         var claudePids: [pid_t] = []
         var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
 
-        for i in 0..<count {
-            let pid = pids[i]
-            guard pid > 0 else { continue }
+        for pid in candidatePids ?? allProcessIds() {
             let len = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
             guard len > 0 else { continue }
             let path = String(cString: pathBuffer)
@@ -1219,6 +1389,87 @@ final class AppState {
             }
         }
         return claudePids
+    }
+
+    private nonisolated static func findGeminiPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [],
+            argSubstrings: [
+                "/gemini-cli/bundle/gemini.js",
+                "/opt/homebrew/bin/gemini",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findCursorPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/cursor.app/contents/macos/cursor",
+                "/cursor.app/contents/frameworks/cursor helper",
+                "/.local/share/cursor-agent/versions/",
+            ],
+            argSubstrings: ["/cursor-agent/index.js"],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findQoderPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/qoder.app/contents/macos/electron",
+                "/qoder.app/contents/frameworks/qoder helper",
+                "/.qoder/bin/qodercli/",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findFactoryPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/factory.app/contents/macos/electron",
+                "/factory.app/contents/frameworks/factory helper",
+                "/.local/bin/droid",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findCodeBuddyPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/codebuddy.app/contents/macos/electron",
+                "/codebuddy.app/contents/frameworks/codebuddy helper",
+            ],
+            argSubstrings: [
+                "/@tencent-ai/codebuddy-code/bin/codebuddy",
+                "/opt/homebrew/bin/codebuddy",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findCopilotPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [],
+            argSubstrings: [
+                "/@github/copilot/npm-loader.js",
+                "/opt/homebrew/bin/copilot",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findOpenCodePids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/opencode.app/contents/macos/opencode",
+                "/opencode.app/contents/macos/opencode-cli",
+                "/.opencode/bin/opencode",
+            ],
+            candidatePids: candidatePids
+        )
     }
 
     /// Get the current working directory of a process using proc_pidinfo
@@ -1242,23 +1493,577 @@ final class AppState {
         return Date(timeIntervalSince1970: TimeInterval(info.pbi_start_tvsec))
     }
 
+    private nonisolated static func isSubagentWorktree(_ cwd: String) -> Bool {
+        cwd.contains("/.claude/worktrees/agent-") || cwd.contains("/.git/worktrees/agent-")
+    }
+
+    private nonisolated static func findMostRecentJSONLFile(
+        in directory: String,
+        after processStart: Date?,
+        fm: FileManager
+    ) -> (path: String, modified: Date)? {
+        guard let files = try? fm.contentsOfDirectory(atPath: directory) else { return nil }
+
+        var bestPath: String?
+        var bestDate = Date.distantPast
+        for file in files where file.hasSuffix(".jsonl") {
+            let fullPath = "\(directory)/\(file)"
+            guard let attrs = try? fm.attributesOfItem(atPath: fullPath),
+                  let modified = attrs[.modificationDate] as? Date,
+                  modified > bestDate else { continue }
+            if let start = processStart, modified < start.addingTimeInterval(-10) {
+                continue
+            }
+            bestPath = fullPath
+            bestDate = modified
+        }
+
+        guard let bestPath else { return nil }
+        return (bestPath, bestDate)
+    }
+
+    private nonisolated static func findFlatStoreSessions(
+        pids: [pid_t],
+        basePath: String,
+        source: String,
+        projectEncoder: (String) -> String,
+        transcriptReader: (String) -> (String?, [ChatMessage])
+    ) -> [DiscoveredSession] {
+        guard !pids.isEmpty else { return [] }
+
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: basePath) else { return [] }
+
+        var results: [DiscoveredSession] = []
+        var seenSessionIds: Set<String> = []
+
+        for pid in pids {
+            guard let cwd = getCwd(for: pid), !cwd.isEmpty, !isSubagentWorktree(cwd) else { continue }
+            let processStart = getProcessStartTime(pid)
+            let projectPath = "\(basePath)/\(projectEncoder(cwd))"
+            guard let best = findMostRecentJSONLFile(in: projectPath, after: processStart, fm: fm) else { continue }
+            if best.modified.timeIntervalSinceNow < -300 { continue }
+
+            let sessionId = ((best.path as NSString).lastPathComponent as NSString).deletingPathExtension
+            guard !sessionId.isEmpty, !seenSessionIds.contains(sessionId) else { continue }
+            seenSessionIds.insert(sessionId)
+
+            let (model, messages) = transcriptReader(best.path)
+            results.append(DiscoveredSession(
+                sessionId: sessionId,
+                cwd: cwd,
+                tty: nil,
+                model: model,
+                pid: pid,
+                modifiedAt: best.modified,
+                recentMessages: messages,
+                source: source
+            ))
+        }
+
+        return results
+    }
+
+    private nonisolated static func findActiveGeminiSessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+        let geminiPids = findGeminiPids(candidatePids: candidatePids)
+        guard !geminiPids.isEmpty else { return [] }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let fm = FileManager.default
+        let tmpBase = "\(home)/.gemini/tmp"
+        guard fm.fileExists(atPath: tmpBase) else { return [] }
+
+        let projects = readGeminiProjectsMap(path: "\(home)/.gemini/projects.json")
+        var results: [DiscoveredSession] = []
+        var seenSessionIds: Set<String> = []
+
+        for pid in geminiPids {
+            guard let cwd = getCwd(for: pid), !cwd.isEmpty, !isSubagentWorktree(cwd) else { continue }
+            guard let projectDir = findGeminiProjectDirectory(for: cwd, tmpBase: tmpBase, projects: projects, fm: fm) else {
+                continue
+            }
+
+            let processStart = getProcessStartTime(pid)
+            let chatsBase = "\(tmpBase)/\(projectDir)/chats"
+            guard let best = findMostRecentGeminiSession(in: chatsBase, after: processStart, fm: fm) else { continue }
+            if best.modified.timeIntervalSinceNow < -300 { continue }
+
+            let (sessionId, model, messages) = readRecentFromGeminiTranscript(path: best.path)
+            guard !sessionId.isEmpty, !seenSessionIds.contains(sessionId) else { continue }
+            seenSessionIds.insert(sessionId)
+
+            results.append(DiscoveredSession(
+                sessionId: sessionId,
+                cwd: cwd,
+                tty: nil,
+                model: model,
+                pid: pid,
+                modifiedAt: best.modified,
+                recentMessages: messages,
+                source: "gemini"
+            ))
+        }
+
+        return results
+    }
+
+    private nonisolated static func readGeminiProjectsMap(path: String) -> [String: String] {
+        guard let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let projects = json["projects"] as? [String: String] else {
+            return [:]
+        }
+        return projects
+    }
+
+    private nonisolated static func findGeminiProjectDirectory(
+        for cwd: String,
+        tmpBase: String,
+        projects: [String: String],
+        fm: FileManager
+    ) -> String? {
+        if let mapped = projects[cwd], fm.fileExists(atPath: "\(tmpBase)/\(mapped)") {
+            return mapped
+        }
+
+        guard let dirs = try? fm.contentsOfDirectory(atPath: tmpBase) else { return nil }
+        for dir in dirs {
+            let projectRootPath = "\(tmpBase)/\(dir)/.project_root"
+            guard let data = fm.contents(atPath: projectRootPath),
+                  let root = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  root == cwd else { continue }
+            return dir
+        }
+        return nil
+    }
+
+    private nonisolated static func findMostRecentGeminiSession(
+        in directory: String,
+        after processStart: Date?,
+        fm: FileManager
+    ) -> (path: String, modified: Date)? {
+        guard let files = try? fm.contentsOfDirectory(atPath: directory) else { return nil }
+
+        var bestPath: String?
+        var bestDate = Date.distantPast
+        for file in files where file.hasPrefix("session-") && file.hasSuffix(".json") {
+            let fullPath = "\(directory)/\(file)"
+            guard let attrs = try? fm.attributesOfItem(atPath: fullPath),
+                  let modified = attrs[.modificationDate] as? Date,
+                  modified > bestDate else { continue }
+            if let start = processStart, modified < start.addingTimeInterval(-10) {
+                continue
+            }
+            bestPath = fullPath
+            bestDate = modified
+        }
+
+        guard let bestPath else { return nil }
+        return (bestPath, bestDate)
+    }
+
+    private nonisolated static func readRecentFromGeminiTranscript(path: String) -> (String, String?, [ChatMessage]) {
+        guard let data = FileManager.default.contents(atPath: path),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (((path as NSString).lastPathComponent as NSString).deletingPathExtension, nil, [])
+        }
+
+        let sessionId = (json["sessionId"] as? String)
+            ?? (((path as NSString).lastPathComponent as NSString).deletingPathExtension)
+        let model = json["model"] as? String
+        let messages = (json["messages"] as? [[String: Any]]) ?? []
+
+        var combined: [(Int, ChatMessage)] = []
+        for (index, message) in messages.enumerated() {
+            let type = (message["type"] as? String)?.lowercased() ?? ""
+            let text = extractTextContent(from: message["content"])
+                ?? (message["content"] as? String)
+            guard let text, !text.isEmpty else { continue }
+
+            if type == "user" {
+                combined.append((index, ChatMessage(isUser: true, text: text)))
+            } else {
+                combined.append((index, ChatMessage(isUser: false, text: text)))
+            }
+        }
+
+        combined.sort { $0.0 < $1.0 }
+        return (sessionId, model, Array(combined.suffix(3).map { $0.1 }))
+    }
+
+    private nonisolated static func findActiveQoderSessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return findFlatStoreSessions(
+            pids: findQoderPids(candidatePids: candidatePids),
+            basePath: "\(home)/.qoder/projects",
+            source: "qoder",
+            projectEncoder: { $0.claudeProjectDirEncoded() },
+            transcriptReader: { readRecentFromTranscript(path: $0) }
+        )
+    }
+
+    private nonisolated static func findActiveCodeBuddySessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return findFlatStoreSessions(
+            pids: findCodeBuddyPids(candidatePids: candidatePids),
+            basePath: "\(home)/.codebuddy/projects",
+            source: "codebuddy",
+            projectEncoder: { $0.appProjectDirEncoded() },
+            transcriptReader: { readRecentFromCodeBuddyTranscript(path: $0) }
+        )
+    }
+
+    private nonisolated static func findActiveFactorySessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return findFlatStoreSessions(
+            pids: findFactoryPids(candidatePids: candidatePids),
+            basePath: "\(home)/.factory/sessions",
+            source: "droid",
+            projectEncoder: { $0.claudeProjectDirEncoded() },
+            transcriptReader: { readRecentFromFactoryTranscript(path: $0) }
+        )
+    }
+
+    private nonisolated static func findActiveCursorSessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+        let cursorPids = findCursorPids(candidatePids: candidatePids)
+        guard !cursorPids.isEmpty else { return [] }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let fm = FileManager.default
+        let projectsBase = "\(home)/.cursor/projects"
+        guard fm.fileExists(atPath: projectsBase) else { return [] }
+
+        var results: [DiscoveredSession] = []
+        var seenSessionIds: Set<String> = []
+
+        for pid in cursorPids {
+            guard let cwd = getCwd(for: pid), !cwd.isEmpty, !isSubagentWorktree(cwd) else { continue }
+            let processStart = getProcessStartTime(pid)
+            let transcriptBase = "\(projectsBase)/\(cwd.appProjectDirEncoded())/agent-transcripts"
+            guard let best = findMostRecentCursorTranscript(in: transcriptBase, after: processStart, fm: fm) else { continue }
+            if best.modified.timeIntervalSinceNow < -300 { continue }
+
+            let sessionId = ((best.path as NSString).lastPathComponent as NSString).deletingPathExtension
+            guard !sessionId.isEmpty, !seenSessionIds.contains(sessionId) else { continue }
+            seenSessionIds.insert(sessionId)
+
+            let (model, messages) = readRecentFromCursorTranscript(path: best.path)
+            results.append(DiscoveredSession(
+                sessionId: sessionId,
+                cwd: cwd,
+                tty: nil,
+                model: model,
+                pid: pid,
+                modifiedAt: best.modified,
+                recentMessages: messages,
+                source: "cursor"
+            ))
+        }
+
+        return results
+    }
+
+    private nonisolated static func findMostRecentCursorTranscript(
+        in transcriptsBase: String,
+        after processStart: Date?,
+        fm: FileManager
+    ) -> (path: String, modified: Date)? {
+        guard let sessionDirs = try? fm.contentsOfDirectory(atPath: transcriptsBase) else { return nil }
+
+        var best: (path: String, modified: Date)?
+        for sessionDir in sessionDirs {
+            let dirPath = "\(transcriptsBase)/\(sessionDir)"
+            guard let candidate = findMostRecentJSONLFile(in: dirPath, after: processStart, fm: fm) else { continue }
+            if best == nil || candidate.modified > best!.modified {
+                best = candidate
+            }
+        }
+        return best
+    }
+
+    private nonisolated static func findActiveCopilotSessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+        let copilotPids = findCopilotPids(candidatePids: candidatePids)
+        guard !copilotPids.isEmpty else { return [] }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let fm = FileManager.default
+        let sessionsBase = "\(home)/.copilot/session-state"
+        guard fm.fileExists(atPath: sessionsBase) else { return [] }
+
+        var results: [DiscoveredSession] = []
+        var seenSessionIds: Set<String> = []
+
+        for pid in copilotPids {
+            guard let cwd = getCwd(for: pid), !cwd.isEmpty, !isSubagentWorktree(cwd) else { continue }
+            let processStart = getProcessStartTime(pid)
+            guard let best = findRecentCopilotSession(base: sessionsBase, cwd: cwd, after: processStart, fm: fm) else {
+                continue
+            }
+            if best.modified.timeIntervalSinceNow < -300 { continue }
+
+            let sessionDir = (best.path as NSString).deletingLastPathComponent
+            let sessionId = (sessionDir as NSString).lastPathComponent
+            guard !sessionId.isEmpty, !seenSessionIds.contains(sessionId) else { continue }
+            seenSessionIds.insert(sessionId)
+
+            let (model, messages) = readRecentFromCopilotTranscript(path: best.path)
+            results.append(DiscoveredSession(
+                sessionId: sessionId,
+                cwd: cwd,
+                tty: nil,
+                model: model,
+                pid: pid,
+                modifiedAt: best.modified,
+                recentMessages: messages,
+                source: "copilot"
+            ))
+        }
+
+        return results
+    }
+
+    private nonisolated static func findRecentCopilotSession(
+        base: String,
+        cwd: String,
+        after processStart: Date?,
+        fm: FileManager
+    ) -> (path: String, modified: Date)? {
+        guard let dirs = try? fm.contentsOfDirectory(atPath: base) else { return nil }
+
+        let candidates = dirs.compactMap { dir -> (path: String, modified: Date)? in
+            let fullPath = "\(base)/\(dir)/events.jsonl"
+            guard let attrs = try? fm.attributesOfItem(atPath: fullPath),
+                  let modified = attrs[.modificationDate] as? Date else { return nil }
+            return (fullPath, modified)
+        }.sorted { $0.modified > $1.modified }
+
+        for candidate in candidates.prefix(50) {
+            if let start = processStart, candidate.modified < start.addingTimeInterval(-10) {
+                continue
+            }
+            if copilotSessionMatchesCwd(path: candidate.path, cwd: cwd) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func copilotSessionMatchesCwd(path: String, cwd: String) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return false }
+        defer { handle.closeFile() }
+
+        let data = handle.readData(ofLength: 32768)
+        guard let text = String(data: data, encoding: .utf8) else { return false }
+
+        for line in text.components(separatedBy: "\n") where !line.isEmpty {
+            guard let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let type = json["type"] as? String,
+                  let payload = json["data"] as? [String: Any] else { continue }
+
+            if type == "session.start",
+               let context = payload["context"] as? [String: Any],
+               let sessionCwd = context["cwd"] as? String, sessionCwd == cwd {
+                return true
+            }
+
+            if type == "hook.start",
+               let input = payload["input"] as? [String: Any],
+               let sessionCwd = input["cwd"] as? String, sessionCwd == cwd {
+                return true
+            }
+        }
+        return false
+    }
+
+    private nonisolated static func findActiveOpenCodeSessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+        let openCodePids = findOpenCodePids(candidatePids: candidatePids)
+        guard !openCodePids.isEmpty else { return [] }
+
+        let dbPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/share/opencode/opencode.db").path
+        guard FileManager.default.fileExists(atPath: dbPath) else { return [] }
+
+        return withSQLiteDatabase(at: dbPath) { db in
+            var results: [DiscoveredSession] = []
+            var seenSessionIds: Set<String> = []
+
+            for pid in openCodePids {
+                guard let cwd = getCwd(for: pid), !cwd.isEmpty, !isSubagentWorktree(cwd) else { continue }
+                let processStart = getProcessStartTime(pid)
+                guard let session = findRecentOpenCodeSession(in: db, cwd: cwd, after: processStart) else { continue }
+                guard !seenSessionIds.contains(session.sessionId) else { continue }
+                seenSessionIds.insert(session.sessionId)
+
+                let (model, messages) = readRecentFromOpenCodeSession(db: db, sessionId: session.sessionId)
+                results.append(DiscoveredSession(
+                    sessionId: session.sessionId,
+                    cwd: cwd,
+                    tty: nil,
+                    model: model,
+                    pid: pid,
+                    modifiedAt: session.modifiedAt,
+                    recentMessages: messages,
+                    source: "opencode"
+                ))
+            }
+
+            return results
+        } ?? []
+    }
+
+    private nonisolated static func withSQLiteDatabase<T>(
+        at path: String,
+        body: (OpaquePointer) -> T?
+    ) -> T? {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK,
+              let db else {
+            if let db { sqlite3_close_v2(db) }
+            return nil
+        }
+        sqlite3_busy_timeout(db, 1000)
+        defer { sqlite3_close_v2(db) }
+        return body(db)
+    }
+
+    private nonisolated static func prepareSQLiteStatement(db: OpaquePointer, sql: String) -> OpaquePointer? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            if let statement { sqlite3_finalize(statement) }
+            return nil
+        }
+        return statement
+    }
+
+    private nonisolated static func bindSQLiteText(_ text: String, to statement: OpaquePointer, index: Int32) {
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        _ = text.withCString { pointer in
+            sqlite3_bind_text(statement, index, pointer, -1, transient)
+        }
+    }
+
+    private nonisolated static func sqliteColumnString(_ statement: OpaquePointer, index: Int32) -> String? {
+        guard let value = sqlite3_column_text(statement, index) else { return nil }
+        return String(cString: UnsafeRawPointer(value).assumingMemoryBound(to: CChar.self))
+    }
+
+    private nonisolated static func findRecentOpenCodeSession(
+        in db: OpaquePointer,
+        cwd: String,
+        after processStart: Date?
+    ) -> (sessionId: String, modifiedAt: Date)? {
+        let sql = """
+            SELECT id, time_updated
+            FROM session
+            WHERE time_archived IS NULL
+              AND (
+                directory = ?
+                OR EXISTS (
+                    SELECT 1
+                    FROM message m
+                    WHERE m.session_id = session.id
+                      AND json_extract(m.data, '$.path.cwd') = ?
+                )
+              )
+            ORDER BY time_updated DESC
+            LIMIT 20;
+            """
+        guard let statement = prepareSQLiteStatement(db: db, sql: sql) else { return nil }
+        defer { sqlite3_finalize(statement) }
+
+        bindSQLiteText(cwd, to: statement, index: 1)
+        bindSQLiteText(cwd, to: statement, index: 2)
+
+        let minUpdatedAtMs = processStart.map { Int64($0.timeIntervalSince1970 * 1000) - 10_000 }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let sessionId = sqliteColumnString(statement, index: 0) else { continue }
+            let updatedAtMs = sqlite3_column_int64(statement, 1)
+            if let minUpdatedAtMs, updatedAtMs < minUpdatedAtMs { continue }
+            let modifiedAt = Date(timeIntervalSince1970: TimeInterval(updatedAtMs) / 1000)
+            return (sessionId, modifiedAt)
+        }
+        return nil
+    }
+
+    private nonisolated static func readRecentFromOpenCodeSession(
+        db: OpaquePointer,
+        sessionId: String
+    ) -> (String?, [ChatMessage]) {
+        var model: String?
+
+        if let messageStatement = prepareSQLiteStatement(
+            db: db,
+            sql: """
+                SELECT data
+                FROM message
+                WHERE session_id = ?
+                ORDER BY time_updated DESC
+                LIMIT 12;
+                """
+        ) {
+            defer { sqlite3_finalize(messageStatement) }
+            bindSQLiteText(sessionId, to: messageStatement, index: 1)
+            while sqlite3_step(messageStatement) == SQLITE_ROW {
+                guard model == nil,
+                      let data = sqliteColumnString(messageStatement, index: 0),
+                      let jsonData = data.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { continue }
+                model = json["modelID"] as? String
+                if model == nil,
+                   let modelInfo = json["model"] as? [String: Any] {
+                    model = modelInfo["modelID"] as? String
+                }
+            }
+        }
+
+        var seenMessageIds: Set<String> = []
+        var combined: [(Int64, ChatMessage)] = []
+        if let partStatement = prepareSQLiteStatement(
+            db: db,
+            sql: """
+                SELECT p.message_id, json_extract(m.data, '$.role'), p.time_created, p.data
+                FROM part p
+                JOIN message m ON m.id = p.message_id
+                WHERE p.session_id = ?
+                ORDER BY p.time_created DESC
+                LIMIT 80;
+                """
+        ) {
+            defer { sqlite3_finalize(partStatement) }
+            bindSQLiteText(sessionId, to: partStatement, index: 1)
+            while sqlite3_step(partStatement) == SQLITE_ROW {
+                guard let messageId = sqliteColumnString(partStatement, index: 0),
+                      !seenMessageIds.contains(messageId),
+                      let role = sqliteColumnString(partStatement, index: 1),
+                      let data = sqliteColumnString(partStatement, index: 3),
+                      let jsonData = data.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                      json["type"] as? String == "text",
+                      let text = json["text"] as? String, !text.isEmpty else { continue }
+
+                let isUser = role == "user"
+                guard isUser || role == "assistant" else { continue }
+
+                seenMessageIds.insert(messageId)
+                combined.append((sqlite3_column_int64(partStatement, 2), ChatMessage(isUser: isUser, text: text)))
+            }
+        }
+
+        combined.sort { $0.0 < $1.0 }
+        return (model, Array(combined.suffix(3).map { $0.1 }))
+    }
+
     // MARK: - Codex Session Discovery
 
     /// Find running Codex processes.
     /// Checks both executable path (Desktop app) and command-line args (npm/Homebrew: node script).
-    private nonisolated static func findCodexPids() -> [pid_t] {
-        var bufferSize = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
-        guard bufferSize > 0 else { return [] }
-        var pids = [pid_t](repeating: 0, count: Int(bufferSize) / MemoryLayout<pid_t>.size + 10)
-        bufferSize = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, bufferSize)
-        let count = Int(bufferSize) / MemoryLayout<pid_t>.size
-
+    private nonisolated static func findCodexPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
         var codexPids: [pid_t] = []
         var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
 
-        for i in 0..<count {
-            let pid = pids[i]
-            guard pid > 0 else { continue }
+        for pid in candidatePids ?? allProcessIds() {
             let len = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
             guard len > 0 else { continue }
             let path = String(cString: pathBuffer)
@@ -1317,8 +2122,8 @@ final class AppState {
     }
 
     /// Find active Codex sessions by matching running processes to session files
-    private nonisolated static func findActiveCodexSessions() -> [DiscoveredSession] {
-        let codexPids = findCodexPids()
+    private nonisolated static func findActiveCodexSessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+        let codexPids = findCodexPids(candidatePids: candidatePids)
         guard !codexPids.isEmpty else { return [] }
 
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -1330,7 +2135,7 @@ final class AppState {
         var seenSessionIds: Set<String> = []
 
         for pid in codexPids {
-            guard let cwd = getCwd(for: pid), !cwd.isEmpty else {
+            guard let cwd = getCwd(for: pid), !cwd.isEmpty, !isSubagentWorktree(cwd) else {
                 // getCwd failed
                 continue
             }
@@ -1440,6 +2245,173 @@ final class AppState {
             return parts.suffix(5).joined(separator: "-")
         }
         return name
+    }
+
+    private nonisolated static func extractTextContent(from rawContent: Any?) -> String? {
+        if let text = rawContent as? String, !text.isEmpty {
+            return text
+        }
+        if let items = rawContent as? [[String: Any]] {
+            for item in items {
+                if let text = item["text"] as? String, !text.isEmpty {
+                    return text
+                }
+                if let output = item["output"] as? [String: Any],
+                   let text = output["text"] as? String, !text.isEmpty {
+                    return text
+                }
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func readRecentFromCursorTranscript(path: String) -> (String?, [ChatMessage]) {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return (nil, []) }
+        defer { handle.closeFile() }
+
+        let fileSize = handle.seekToEndOfFile()
+        let readSize: UInt64 = min(fileSize, 65536)
+        handle.seek(toFileOffset: fileSize - readSize)
+        let data = handle.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return (nil, []) }
+
+        var userMessages: [(Int, String)] = []
+        var assistantMessages: [(Int, String)] = []
+        var index = 0
+
+        for line in text.components(separatedBy: "\n") where !line.isEmpty {
+            guard let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let role = json["role"] as? String,
+                  let message = json["message"] as? [String: Any],
+                  let textContent = extractTextContent(from: message["content"])
+            else { continue }
+
+            if role == "user" {
+                userMessages.append((index, textContent))
+            } else if role == "assistant" {
+                assistantMessages.append((index, textContent))
+            }
+            index += 1
+        }
+
+        var combined: [(Int, ChatMessage)] = []
+        for (i, text) in userMessages.suffix(3) {
+            combined.append((i, ChatMessage(isUser: true, text: text)))
+        }
+        for (i, text) in assistantMessages.suffix(3) {
+            combined.append((i, ChatMessage(isUser: false, text: text)))
+        }
+        combined.sort { $0.0 < $1.0 }
+        return (nil, Array(combined.suffix(3).map { $0.1 }))
+    }
+
+    private nonisolated static func readRecentFromCodeBuddyTranscript(path: String) -> (String?, [ChatMessage]) {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return (nil, []) }
+        defer { handle.closeFile() }
+
+        let fileSize = handle.seekToEndOfFile()
+        let readSize: UInt64 = min(fileSize, 65536)
+        handle.seek(toFileOffset: fileSize - readSize)
+        let data = handle.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return (nil, []) }
+
+        var model: String?
+        var userMessages: [(Int, String)] = []
+        var assistantMessages: [(Int, String)] = []
+        var index = 0
+
+        for line in text.components(separatedBy: "\n") where !line.isEmpty {
+            guard let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  json["type"] as? String == "message",
+                  let role = json["role"] as? String,
+                  let textContent = extractTextContent(from: json["content"])
+            else { continue }
+
+            if model == nil,
+               let providerData = json["providerData"] as? [String: Any],
+               let messageModel = providerData["model"] as? String, !messageModel.isEmpty {
+                model = messageModel
+            }
+
+            if role == "user" {
+                userMessages.append((index, textContent))
+            } else if role == "assistant" {
+                assistantMessages.append((index, textContent))
+            }
+            index += 1
+        }
+
+        var combined: [(Int, ChatMessage)] = []
+        for (i, text) in userMessages.suffix(3) {
+            combined.append((i, ChatMessage(isUser: true, text: text)))
+        }
+        for (i, text) in assistantMessages.suffix(3) {
+            combined.append((i, ChatMessage(isUser: false, text: text)))
+        }
+        combined.sort { $0.0 < $1.0 }
+        return (model, Array(combined.suffix(3).map { $0.1 }))
+    }
+
+    private nonisolated static func readRecentFromFactoryTranscript(path: String) -> (String?, [ChatMessage]) {
+        let sidecarPath = path.replacingOccurrences(of: ".jsonl", with: ".settings.json")
+        var model: String?
+        if let data = FileManager.default.contents(atPath: sidecarPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let foundModel = json["model"] as? String, !foundModel.isEmpty {
+            model = foundModel
+        }
+        let (_, messages) = readRecentFromTranscript(path: path)
+        return (model, messages)
+    }
+
+    private nonisolated static func readRecentFromCopilotTranscript(path: String) -> (String?, [ChatMessage]) {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return (nil, []) }
+        defer { handle.closeFile() }
+
+        let fileSize = handle.seekToEndOfFile()
+        let readSize: UInt64 = min(fileSize, 65536)
+        handle.seek(toFileOffset: fileSize - readSize)
+        let data = handle.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return (nil, []) }
+
+        var model: String?
+        var userMessages: [(Int, String)] = []
+        var assistantMessages: [(Int, String)] = []
+        var index = 0
+
+        for line in text.components(separatedBy: "\n") where !line.isEmpty {
+            guard let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let type = json["type"] as? String,
+                  let payload = json["data"] as? [String: Any]
+            else { continue }
+
+            if model == nil, type == "session.shutdown",
+               let currentModel = payload["currentModel"] as? String, !currentModel.isEmpty {
+                model = currentModel
+            }
+
+            if type == "user.message",
+               let textContent = payload["content"] as? String, !textContent.isEmpty {
+                userMessages.append((index, textContent))
+            } else if type == "assistant.message",
+                      let textContent = payload["content"] as? String, !textContent.isEmpty {
+                assistantMessages.append((index, textContent))
+            }
+            index += 1
+        }
+
+        var combined: [(Int, ChatMessage)] = []
+        for (i, text) in userMessages.suffix(3) {
+            combined.append((i, ChatMessage(isUser: true, text: text)))
+        }
+        for (i, text) in assistantMessages.suffix(3) {
+            combined.append((i, ChatMessage(isUser: false, text: text)))
+        }
+        combined.sort { $0.0 < $1.0 }
+        return (model, Array(combined.suffix(3).map { $0.1 }))
     }
 
     /// Read model and recent messages from a Codex transcript file
@@ -1604,5 +2576,13 @@ extension String {
             }
         }
         return result
+    }
+
+    func appProjectDirEncoded() -> String {
+        let encoded = claudeProjectDirEncoded()
+        if encoded.hasPrefix("-") {
+            return String(encoded.dropFirst())
+        }
+        return encoded
     }
 }
