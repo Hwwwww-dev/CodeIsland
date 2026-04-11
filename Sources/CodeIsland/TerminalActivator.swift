@@ -42,10 +42,10 @@ struct TerminalActivator {
             return
         }
 
-        // IDE integrated terminal: bring the IDE to front (no tab-level switching)
+        // IDE integrated terminal: try window-level matching by CWD, fall back to app-level
         if session.isIDETerminal,
            let bundleId = session.termBundleId {
-            activateByBundleId(bundleId)
+            activateIDEWindow(bundleId: bundleId, cwd: session.cwd)
             return
         }
 
@@ -517,6 +517,52 @@ struct TerminalActivator {
             _ = runProcess(bin, args: ["select-window", "-t", pane], env: tmuxProcessEnv(tmuxEnv))
             _ = runProcess(bin, args: ["select-pane", "-t", pane], env: tmuxProcessEnv(tmuxEnv))
         }
+    }
+
+    // MARK: - IDE window-level activation (JetBrains, VS Code, Zed, etc.)
+
+    /// Activate the specific IDE window whose title contains the project folder name.
+    /// Falls back to app-level activation if no CWD or no matching window found.
+    private static func activateIDEWindow(bundleId: String, cwd: String?) {
+        guard let cwd = cwd, !cwd.isEmpty else {
+            activateByBundleId(bundleId)
+            return
+        }
+        let folderName = (cwd as NSString).lastPathComponent
+        guard !folderName.isEmpty else {
+            activateByBundleId(bundleId)
+            return
+        }
+
+        guard let app = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleId
+        }) else {
+            activateByBundleId(bundleId)
+            return
+        }
+
+        if app.isHidden { app.unhide() }
+        app.activate()
+
+        // Use System Events to iterate windows by title and AXRaise the matching one.
+        // This avoids CGWindowList ↔ System Events index mismatch.
+        let appName = app.localizedName ?? "Application"
+        let script = """
+        tell application "System Events"
+            tell process "\(escapeAppleScript(appName))"
+                set frontmost to true
+                repeat with w in windows
+                    try
+                        if name of w contains "\(escapeAppleScript(folderName))" then
+                            perform action "AXRaise" of w
+                            return
+                        end if
+                    end try
+                end repeat
+            end tell
+        end tell
+        """
+        runAppleScript(script)
     }
 
     // MARK: - Activate by bundle ID
