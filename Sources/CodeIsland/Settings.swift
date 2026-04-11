@@ -12,7 +12,7 @@ enum AppVersion {
 
 enum SettingsKey {
     // Language
-    static let appLanguage = "appLanguage"                 // "system", "en", "zh"
+    static let appLanguage = "appLanguage"                 // "system", "en", "zh", "tr"
 
     // General - System
     static let launchAtLogin = "launchAtLogin"
