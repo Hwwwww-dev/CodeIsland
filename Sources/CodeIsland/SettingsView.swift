@@ -412,6 +412,11 @@ private struct HooksPage: View {
     @State private var statusMessage = ""
     @State private var statusIsError = false
     @State private var refreshKey = 0
+    @State private var customName = ""
+    @State private var customSource = ""
+    @State private var customConfigPath = ""
+    @State private var customConfigKey = "hooks"
+    @State private var customFormat: HookFormat = .claude
 
     private func refreshCLIStatuses() {
         for cli in ConfigInstaller.allCLIs {
@@ -433,7 +438,7 @@ private struct HooksPage: View {
                     CLIStatusRow(
                         name: cli.name,
                         source: cli.source,
-                        configPath: "~/\(cli.configPath)",
+                        configPath: cli.displayConfigPath,
                         fullPath: cli.fullPath,
                         installed: installed,
                         exists: exists
@@ -452,6 +457,71 @@ private struct HooksPage: View {
                     exists: ocExists
                 ) { _ in refreshCLIStatuses() }
                 .id("opencode-\(refreshKey)")
+            }
+
+            Section("Custom CLIs") {
+                let customItems = ConfigInstaller.customCLIConfigs()
+                if customItems.isEmpty {
+                    Text("No custom CLI configured")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(customItems) { item in
+                        HStack(alignment: .top, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.name)
+                                Text("\(item.source) · \(item.configPath)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button(role: .destructive) {
+                                _ = ConfigInstaller.setEnabled(source: item.source, enabled: false)
+                                _ = ConfigInstaller.removeCustomCLI(source: item.source)
+                                refreshCLIStatuses()
+                                refreshKey += 1
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+
+                TextField("Name (e.g. MyTool)", text: $customName)
+                TextField("Source (e.g. mytool)", text: $customSource)
+                TextField("Config path (e.g. .mytool/settings.json)", text: $customConfigPath)
+                TextField("Config key", text: $customConfigKey)
+                Picker("Template", selection: $customFormat) {
+                    Text("Claude").tag(HookFormat.claude)
+                    Text("Codex/Gemini").tag(HookFormat.nested)
+                    Text("Cursor").tag(HookFormat.flat)
+                    Text("Copilot").tag(HookFormat.copilot)
+                }
+
+                Button("Add Custom CLI") {
+                    let result = ConfigInstaller.addCustomCLI(
+                        name: customName,
+                        source: customSource,
+                        configPath: customConfigPath,
+                        format: customFormat,
+                        configKey: customConfigKey
+                    )
+                    statusMessage = result.message
+                    statusIsError = !result.ok
+                    guard result.ok else { return }
+
+                    let normalizedSource = customSource
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .lowercased()
+                    _ = ConfigInstaller.setEnabled(source: normalizedSource, enabled: true)
+                    customName = ""
+                    customSource = ""
+                    customConfigPath = ""
+                    customConfigKey = "hooks"
+                    customFormat = .claude
+                    refreshCLIStatuses()
+                    refreshKey += 1
+                }
             }
 
             Section(l10n["management"]) {
@@ -754,10 +824,14 @@ private struct MascotsPage: View {
         ("Dex", "codex", "Codex (OpenAI)", Color(red: 0.92, green: 0.92, blue: 0.93)),
         ("Gemini", "gemini", "Gemini CLI", Color(red: 0.278, green: 0.588, blue: 0.894)),
         ("CursorBot", "cursor", "Cursor", Color(red: 0.96, green: 0.31, blue: 0.0)),
+        ("TraeBot", "trae", "Trae", Color(red: 0.96, green: 0.31, blue: 0.0)),
+        ("TraeCNBot", "traecn", "Trae CN", Color(red: 0.96, green: 0.31, blue: 0.0)),
         ("CopilotBot", "copilot", "GitHub Copilot", Color(red: 0.35, green: 0.75, blue: 0.95)),
         ("QoderBot", "qoder", "Qoder", Color(red: 0.165, green: 0.859, blue: 0.361)),
         ("Droid", "droid", "Factory", Color(red: 0.835, green: 0.416, blue: 0.149)),
         ("Buddy", "codebuddy", "CodeBuddy", Color(red: 0.424, green: 0.302, blue: 1.0)),
+        ("BuddyCN", "codybuddycn", "CodyBuddyCN", Color(red: 0.424, green: 0.302, blue: 1.0)),
+        ("StepFun", "stepfun", "StepFun", Color(red: 0.424, green: 0.302, blue: 1.0)),
         ("OpBot", "opencode", "OpenCode", Color(red: 0.55, green: 0.55, blue: 0.57)),
     ]
 

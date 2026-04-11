@@ -23,6 +23,25 @@ enum HookFormat {
     case flat
     /// GitHub Copilot CLI style: [{type, bash, timeoutSec}] with top-level version
     case copilot
+
+    var storageValue: String {
+        switch self {
+        case .claude: return "claude"
+        case .nested: return "nested"
+        case .flat: return "flat"
+        case .copilot: return "copilot"
+        }
+    }
+
+    init?(storageValue: String) {
+        switch storageValue.lowercased() {
+        case "claude": self = .claude
+        case "nested": self = .nested
+        case "flat": self = .flat
+        case "copilot": self = .copilot
+        default: return nil
+        }
+    }
 }
 
 /// A CLI tool that supports hooks
@@ -36,8 +55,27 @@ struct CLIConfig {
     /// Events that require a minimum CLI version (eventName → minVersion like "2.1.89")
     var versionedEvents: [String: String] = [:]
 
-    var fullPath: String { NSHomeDirectory() + "/\(configPath)" }
+    var fullPath: String {
+        if configPath.hasPrefix("/") { return configPath }
+        if configPath.hasPrefix("~/") {
+            return NSHomeDirectory() + "/" + configPath.dropFirst(2)
+        }
+        return NSHomeDirectory() + "/\(configPath)"
+    }
     var dirPath: String { (fullPath as NSString).deletingLastPathComponent }
+    var displayConfigPath: String {
+        if configPath.hasPrefix("/") || configPath.hasPrefix("~/") { return configPath }
+        return "~/\(configPath)"
+    }
+}
+
+struct CustomCLIConfig: Codable, Identifiable, Equatable {
+    var id: String { source }
+    let name: String
+    let source: String
+    let configPath: String
+    let format: String
+    let configKey: String
 }
 
 struct ConfigInstaller {
@@ -45,6 +83,7 @@ struct ConfigInstaller {
     private static let bridgePath = codeislandDir + "/codeisland-bridge"
     private static let hookScriptPath = codeislandDir + "/codeisland-hook.sh"
     private static let hookCommand = "~/.codeisland/codeisland-hook.sh"
+    private static let customCLIConfigsKey = "custom_cli_configs_v1"
     /// Absolute path for external CLI hooks — avoids tilde expansion issues in IDE environments
     private static let bridgeCommand = codeislandDir + "/codeisland-bridge"
 
@@ -54,7 +93,7 @@ struct ConfigInstaller {
 
     // MARK: - All supported CLIs
 
-    static let allCLIs: [CLIConfig] = [
+    private static let builtInCLIs: [CLIConfig] = [
         // Claude Code — uses hook script (with bridge dispatcher + nc fallback)
         CLIConfig(
             name: "Claude Code", source: "claude",
@@ -126,6 +165,42 @@ struct ConfigInstaller {
                 ("stop", 5, false),
             ]
         ),
+        // Trae
+        CLIConfig(
+            name: "Trae", source: "trae",
+            configPath: ".trae/hooks.json", configKey: "hooks",
+            format: .flat,
+            events: [
+                ("beforeSubmitPrompt", 5, false),
+                ("beforeShellExecution", 5, false),
+                ("afterShellExecution", 5, false),
+                ("beforeReadFile", 5, false),
+                ("afterFileEdit", 5, false),
+                ("beforeMCPExecution", 5, false),
+                ("afterMCPExecution", 5, false),
+                ("afterAgentThought", 5, false),
+                ("afterAgentResponse", 5, false),
+                ("stop", 5, false),
+            ]
+        ),
+        // Trae CN
+        CLIConfig(
+            name: "Trae CN", source: "traecn",
+            configPath: ".trae-cn/hooks.json", configKey: "hooks",
+            format: .flat,
+            events: [
+                ("beforeSubmitPrompt", 5, false),
+                ("beforeShellExecution", 5, false),
+                ("afterShellExecution", 5, false),
+                ("beforeReadFile", 5, false),
+                ("afterFileEdit", 5, false),
+                ("beforeMCPExecution", 5, false),
+                ("afterMCPExecution", 5, false),
+                ("afterAgentThought", 5, false),
+                ("afterAgentResponse", 5, false),
+                ("stop", 5, false),
+            ]
+        ),
         // Qoder — Claude Code fork
         CLIConfig(
             name: "Qoder", source: "qoder",
@@ -180,6 +255,60 @@ struct ConfigInstaller {
                 ("PreCompact", 5, true),
             ]
         ),
+        // CodyBuddyCN — CodeBuddy CN variant
+        CLIConfig(
+            name: "CodyBuddyCN", source: "codybuddycn",
+            configPath: ".codybuddycn/settings.json", configKey: "hooks",
+            format: .claude,
+            events: [
+                ("UserPromptSubmit", 5, true),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, true),
+                ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
+                ("Stop", 5, true),
+                ("SubagentStart", 5, true),
+                ("SubagentStop", 5, true),
+                ("Notification", 86400, false),
+                ("PreCompact", 5, true),
+            ]
+        ),
+        // StepFun — Claude Code fork
+        CLIConfig(
+            name: "StepFun", source: "stepfun",
+            configPath: ".stepfun/settings.json", configKey: "hooks",
+            format: .claude,
+            events: [
+                ("UserPromptSubmit", 5, true),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, true),
+                ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
+                ("Stop", 5, true),
+                ("SubagentStart", 5, true),
+                ("SubagentStop", 5, true),
+                ("Notification", 86400, false),
+                ("PreCompact", 5, true),
+            ]
+        ),
+        // WorkBuddy — Claude Code fork
+        CLIConfig(
+            name: "WorkBuddy", source: "workbuddy",
+            configPath: ".workbuddy/settings.json", configKey: "hooks",
+            format: .claude,
+            events: [
+                ("UserPromptSubmit", 5, true),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, true),
+                ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
+                ("Stop", 5, true),
+                ("SubagentStart", 5, true),
+                ("SubagentStop", 5, true),
+                ("Notification", 86400, false),
+                ("PreCompact", 5, true),
+            ]
+        ),
         // GitHub Copilot CLI
         CLIConfig(
             name: "Copilot", source: "copilot",
@@ -196,9 +325,142 @@ struct ConfigInstaller {
         ),
     ]
 
+    static var allCLIs: [CLIConfig] {
+        builtInCLIs + customCLIs()
+    }
+
     /// Non-Claude CLIs (installed via bridge binary directly)
     private static var externalCLIs: [CLIConfig] {
         allCLIs.filter { $0.source != "claude" }
+    }
+
+    private static func defaultEvents(for format: HookFormat) -> [(String, Int, Bool)] {
+        switch format {
+        case .claude:
+            return [
+                ("UserPromptSubmit", 5, true),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, true),
+                ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
+                ("Stop", 5, true),
+                ("SubagentStart", 5, true),
+                ("SubagentStop", 5, true),
+                ("Notification", 86400, false),
+                ("PreCompact", 5, true),
+            ]
+        case .nested:
+            return [
+                ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
+                ("UserPromptSubmit", 5, false),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, false),
+                ("Stop", 5, false),
+            ]
+        case .flat:
+            return [
+                ("beforeSubmitPrompt", 5, false),
+                ("beforeShellExecution", 5, false),
+                ("afterShellExecution", 5, false),
+                ("beforeReadFile", 5, false),
+                ("afterFileEdit", 5, false),
+                ("beforeMCPExecution", 5, false),
+                ("afterMCPExecution", 5, false),
+                ("afterAgentThought", 5, false),
+                ("afterAgentResponse", 5, false),
+                ("stop", 5, false),
+            ]
+        case .copilot:
+            return [
+                ("sessionStart", 5, false),
+                ("sessionEnd", 5, true),
+                ("userPromptSubmitted", 5, false),
+                ("preToolUse", 5, false),
+                ("postToolUse", 5, true),
+                ("errorOccurred", 5, true),
+            ]
+        }
+    }
+
+    static func customCLIConfigs() -> [CustomCLIConfig] {
+        guard let data = UserDefaults.standard.data(forKey: customCLIConfigsKey),
+              let items = try? JSONDecoder().decode([CustomCLIConfig].self, from: data) else {
+            return []
+        }
+        return items
+    }
+
+    private static func saveCustomCLIConfigs(_ items: [CustomCLIConfig]) {
+        guard let data = try? JSONEncoder().encode(items) else { return }
+        UserDefaults.standard.set(data, forKey: customCLIConfigsKey)
+    }
+
+    static func customCLIs() -> [CLIConfig] {
+        customCLIConfigs().compactMap { item in
+            guard let format = HookFormat(storageValue: item.format) else { return nil }
+            return CLIConfig(
+                name: item.name,
+                source: item.source,
+                configPath: item.configPath,
+                configKey: item.configKey,
+                format: format,
+                events: defaultEvents(for: format)
+            )
+        }
+    }
+
+    static func addCustomCLI(
+        name: String,
+        source: String,
+        configPath: String,
+        format: HookFormat,
+        configKey: String = "hooks"
+    ) -> (ok: Bool, message: String) {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedSource = source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedConfigPath = configPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedConfigKey = configKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !normalizedName.isEmpty else { return (false, "Name cannot be empty") }
+        guard !normalizedSource.isEmpty else { return (false, "Source cannot be empty") }
+        guard normalizedSource.range(of: #"^[a-z0-9_-]+$"#, options: .regularExpression) != nil else {
+            return (false, "Source must use [a-z0-9_-]")
+        }
+        guard !normalizedConfigPath.isEmpty else { return (false, "Config path cannot be empty") }
+        guard !normalizedConfigKey.isEmpty else { return (false, "Config key cannot be empty") }
+
+        let builtInSources = Set(builtInCLIs.map(\.source))
+        guard !builtInSources.contains(normalizedSource) else {
+            return (false, "Source '\(normalizedSource)' is already built-in")
+        }
+
+        var items = customCLIConfigs()
+        let entry = CustomCLIConfig(
+            name: normalizedName,
+            source: normalizedSource,
+            configPath: normalizedConfigPath,
+            format: format.storageValue,
+            configKey: normalizedConfigKey
+        )
+        if let idx = items.firstIndex(where: { $0.source == normalizedSource }) {
+            items[idx] = entry
+        } else {
+            items.append(entry)
+        }
+        saveCustomCLIConfigs(items)
+        return (true, "Custom CLI saved")
+    }
+
+    @discardableResult
+    static func removeCustomCLI(source: String) -> Bool {
+        let normalizedSource = source.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var items = customCLIConfigs()
+        let originalCount = items.count
+        items.removeAll { $0.source == normalizedSource }
+        guard items.count != originalCount else { return false }
+        saveCustomCLIConfigs(items)
+        return true
     }
 
     /// Hook script version — bump this when the script template changes

@@ -25,9 +25,13 @@ struct TerminalActivator {
     private static let sourceToNativeAppBundleId: [String: String] = [
         "codex": "com.openai.codex",
         "cursor": "com.todesktop.230313mzl4w4u92",
+        "trae": "com.trae.app",
+        "traecn": "com.trae.app",
         "qoder": "com.qoder.ide",
         "droid": "com.factory.app",
         "codebuddy": "com.tencent.codebuddy",
+        "codybuddycn": "com.tencent.codebuddy.cn",
+        "stepfun": "com.stepfun.app",
         "opencode": "ai.opencode.desktop",
     ]
 
@@ -37,9 +41,12 @@ struct TerminalActivator {
     private static let nativeAppBundles: [String: String] = [
         "com.openai.codex": "Codex",
         "com.todesktop.230313mzl4w4u92": "Cursor",
+        "com.trae.app": "Trae",
         "com.qoder.ide": "Qoder",
         "com.factory.app": "Factory",
         "com.tencent.codebuddy": "CodeBuddy",
+        "com.tencent.codebuddy.cn": "CodyBuddyCN",
+        "com.stepfun.app": "StepFun",
         "ai.opencode.desktop": "OpenCode",
     ]
 

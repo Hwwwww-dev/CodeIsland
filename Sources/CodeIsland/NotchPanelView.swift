@@ -1431,11 +1431,18 @@ private struct SessionListView: View {
                 ("claude", "Claude"),
                 ("codex", "Codex"),
                 ("gemini", "Gemini"),
+                ("antigravity", "AntiGravity"),
                 ("cursor", "Cursor"),
+                ("trae", "Trae"),
+                ("traecn", "Trae CN"),
                 ("copilot", "Copilot"),
                 ("qoder", "Qoder"),
                 ("droid", "Factory"),
                 ("codebuddy", "CodeBuddy"),
+                ("codybuddycn", "CodyBuddyCN"),
+                ("stepfun", "StepFun"),
+                ("workbuddy", "WorkBuddy"),
+                ("hermes", "Hermes"),
                 ("opencode", "OpenCode"),
             ]
             var result: [(String, String?, [String])] = []
@@ -2005,9 +2012,13 @@ private struct TerminalBadge: View {
 
     private static let sourceBundleIds: [String: String] = [
         "cursor": "com.todesktop.230313mzl4w4u92",
+        "trae": "com.trae.app",
+        "traecn": "com.trae.app",
         "qoder": "com.qoder.ide",
         "droid": "com.factory.app",
         "codebuddy": "com.tencent.codebuddy",
+        "codybuddycn": "com.tencent.codebuddy.cn",
+        "stepfun": "com.stepfun.app",
         "codex": "com.openai.codex",
         "opencode": "ai.opencode.desktop",
     ]
@@ -2158,11 +2169,18 @@ private let cliIconFiles: [String: String] = [
     "claude": "claude",
     "codex": "codex",
     "gemini": "gemini",
+    "antigravity": "claude",
     "cursor": "cursor",
+    "trae": "cursor",
+    "traecn": "cursor",
     "copilot": "copilot",
     "qoder": "qoder",
     "droid": "factory",
     "codebuddy": "codebuddy",
+    "codybuddycn": "codebuddy",
+    "stepfun": "claude",
+    "workbuddy": "claude",
+    "hermes": "claude",
     "opencode": "opencode",
 ]
 
