@@ -41,11 +41,16 @@ struct CLIConfig {
 }
 
 struct ConfigInstaller {
-    private static let bridgePath = NSHomeDirectory() + "/.claude/hooks/codeisland-bridge"
-    private static let hookScriptPath = NSHomeDirectory() + "/.claude/hooks/codeisland-hook.sh"
-    private static let hookCommand = "~/.claude/hooks/codeisland-hook.sh"
+    private static let codeislandDir = NSHomeDirectory() + "/.codeisland"
+    private static let bridgePath = codeislandDir + "/codeisland-bridge"
+    private static let hookScriptPath = codeislandDir + "/codeisland-hook.sh"
+    private static let hookCommand = "~/.codeisland/codeisland-hook.sh"
     /// Absolute path for external CLI hooks — avoids tilde expansion issues in IDE environments
-    private static let bridgeCommand = NSHomeDirectory() + "/.claude/hooks/codeisland-bridge"
+    private static let bridgeCommand = codeislandDir + "/codeisland-bridge"
+
+    // Legacy paths for migration cleanup (#32)
+    private static let legacyBridgePath = NSHomeDirectory() + "/.claude/hooks/codeisland-bridge"
+    private static let legacyHookScriptPath = NSHomeDirectory() + "/.claude/hooks/codeisland-hook.sh"
 
     // MARK: - All supported CLIs
 
@@ -82,6 +87,7 @@ struct ConfigInstaller {
             format: .nested,
             events: [
                 ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
                 ("UserPromptSubmit", 5, false),
                 ("PreToolUse", 5, false),
                 ("PostToolUse", 5, false),
@@ -196,13 +202,13 @@ struct ConfigInstaller {
     }
 
     /// Hook script version — bump this when the script template changes
-    private static let hookScriptVersion = 4
+    private static let hookScriptVersion = 5
 
     /// Hook script for Claude Code (dispatcher: bridge binary → nc fallback)
     private static let hookScript = """
         #!/bin/bash
         # CodeIsland hook v\(hookScriptVersion) — native bridge with shell fallback
-        BRIDGE="$HOME/.claude/hooks/codeisland-bridge"
+        BRIDGE="$HOME/.codeisland/codeisland-bridge"
         if [ -x "$BRIDGE" ]; then
           exec "$BRIDGE" "$@"
         fi
@@ -232,9 +238,12 @@ struct ConfigInstaller {
     static func install() -> Bool {
         let fm = FileManager.default
 
-        // Ensure hooks directory
-        let hookDir = (hookScriptPath as NSString).deletingLastPathComponent
-        try? fm.createDirectory(atPath: hookDir, withIntermediateDirectories: true)
+        // Ensure ~/.codeisland directory
+        try? fm.createDirectory(atPath: codeislandDir, withIntermediateDirectories: true)
+
+        // Clean up legacy paths at ~/.claude/hooks/ (#32)
+        try? fm.removeItem(atPath: legacyBridgePath)
+        try? fm.removeItem(atPath: legacyHookScriptPath)
 
         // Install hook script + bridge binary (shared by all CLIs)
         installHookScript(fm: fm)
@@ -269,6 +278,9 @@ struct ConfigInstaller {
         let fm = FileManager.default
         try? fm.removeItem(atPath: hookScriptPath)
         try? fm.removeItem(atPath: bridgePath)
+        // Also clean up legacy paths (#32)
+        try? fm.removeItem(atPath: legacyBridgePath)
+        try? fm.removeItem(atPath: legacyHookScriptPath)
 
         for cli in allCLIs {
             uninstallHooks(cli: cli, fm: fm)

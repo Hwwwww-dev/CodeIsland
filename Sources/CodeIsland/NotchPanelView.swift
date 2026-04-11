@@ -13,6 +13,7 @@ struct NotchPanelView: View {
     @AppStorage(SettingsKey.smartSuppress) private var smartSuppress = SettingsDefaults.smartSuppress
     @AppStorage(SettingsKey.hideWhenNoSession) private var hideWhenNoSession = SettingsDefaults.hideWhenNoSession
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
+    @AppStorage(SettingsKey.collapsedWidthScale) private var collapsedWidthScale = SettingsDefaults.collapsedWidthScale
 
     /// Delayed hover: prevents accidental expansion when mouse passes through
     @State private var hoverTimer: Timer?
@@ -43,17 +44,25 @@ struct NotchPanelView: View {
     /// Minimum wing width needed to display compact bar content
     private var compactWingWidth: CGFloat { mascotSize + 14 }
 
+    /// Effective notch width — applies user scale on non-notch screens (#56).
+    private var effectiveNotchW: CGFloat {
+        guard !hasNotch else { return notchW }
+        let scale = CGFloat(max(collapsedWidthScale, 50)) / 100.0
+        return notchW * scale
+    }
+
     /// Total panel width — adapts based on state and screen geometry
     private var panelWidth: CGFloat {
+        let nw = effectiveNotchW
         let maxWidth = min(620, screenWidth - 40)
-        if showIdleIndicator { return idleHovered ? notchW + compactWingWidth * 2 + 80 : notchW + compactWingWidth * 2 }
-        if !isActive { return hasNotch ? notchW - 20 : notchW }
-        if shouldShowExpanded { return min(max(notchW + 200, 580), maxWidth) }
+        if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 : nw + compactWingWidth * 2 }
+        if !isActive { return hasNotch ? notchW - 20 : nw }
+        if shouldShowExpanded { return min(max(nw + 200, 580), maxWidth) }
         let wing = compactWingWidth
         let extra: CGFloat = appState.status == .idle ? 0 : 20
         // Reserve space for tool status — proportional to screen width
         let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
-        return notchW + wing * 2 + extra + toolExtra
+        return nw + wing * 2 + extra + toolExtra
     }
 
     var body: some View {
@@ -187,9 +196,21 @@ struct NotchPanelView: View {
             .onAppear { displayedToolStatus = showToolStatus }
             .contentShape(Rectangle())
             .onHover { hovering in
-                // Idle indicator hover
+                // Idle indicator hover — delay un-hover to prevent oscillation when
+                // the animated width change crosses the mouse position (#52).
                 if showIdleIndicator {
-                    withAnimation(NotchAnimation.micro) { idleHovered = hovering }
+                    if hovering {
+                        hoverTimer?.invalidate()
+                        hoverTimer = nil
+                        withAnimation(NotchAnimation.micro) { idleHovered = true }
+                    } else {
+                        hoverTimer?.invalidate()
+                        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
+                            Task { @MainActor in
+                                withAnimation(NotchAnimation.micro) { idleHovered = false }
+                            }
+                        }
+                    }
                     return
                 }
                 switch appState.surface {
@@ -1741,29 +1762,14 @@ private struct SessionCard: View {
                         ? Array(session.recentMessages.suffix(2))
                         : session.recentMessages
                     ForEach(visibleMessages) { msg in
-                        if msg.isUser {
-                            HStack(alignment: .top, spacing: 4) {
-                                Text(">")
-                                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
-                                Text(renderUserText(msg.text))
-                                    .font(.system(size: fontSize, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.9))
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                            }
-                        } else {
-                            HStack(alignment: .top, spacing: 4) {
-                                Text("$")
-                                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(Color(red: 0.85, green: 0.47, blue: 0.34))
-                                Text(renderMarkdown(compactText(stripDirectives(msg.text))))
-                                    .font(.system(size: fontSize, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.85))
-                                    .lineLimit(aiLineLimit)
-                                    .truncationMode(.tail)
-                            }
-                        }
+                        // Extracted to separate view so SwiftUI skips re-rendering
+                        // when only the parent's hover state changes (#52 perf).
+                        ChatMessageRow(
+                            text: msg.text,
+                            isUser: msg.isUser,
+                            fontSize: fontSize,
+                            aiLineLimit: aiLineLimit
+                        )
                     }
 
                     // Working indicator: show what AI is doing right now
@@ -1800,27 +1806,6 @@ private struct SessionCard: View {
         .buttonStyle(.plain)
         .contentShape(Rectangle())
         .onHover { h in withAnimation(NotchAnimation.micro) { hovering = h } }
-    }
-
-    /// Collapse consecutive blank lines and trim leading/trailing whitespace
-    private func compactText(_ text: String) -> String {
-        text.components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .reduce(into: [String]()) { result, line in
-                // Skip consecutive empty lines
-                if line.isEmpty && (result.last?.isEmpty ?? true) { return }
-                result.append(line)
-            }
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func renderMarkdown(_ text: String) -> AttributedString {
-        ChatMessageTextFormatter.inlineMarkdown(text)
-    }
-
-    private func renderUserText(_ text: String) -> AttributedString {
-        ChatMessageTextFormatter.literalText(text)
     }
 
     private func timeAgo(_ date: Date) -> String {
@@ -2351,6 +2336,59 @@ private func shortSessionId(_ id: String) -> String {
 
 /// Strip internal directives (::code-comment{}, ::git-*{}, etc.) from message text
 /// so they don't leak into the UI preview.
+// MARK: - Chat Message Row (extracted for render-skip optimization)
+
+/// Separate view so SwiftUI skips body re-evaluation when only the parent's
+/// hover state changes — avoids expensive text processing on every hover.
+private struct ChatMessageRow: View, Equatable {
+    let text: String
+    let isUser: Bool
+    let fontSize: CGFloat
+    let aiLineLimit: Int?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.text == rhs.text && lhs.isUser == rhs.isUser
+        && lhs.fontSize == rhs.fontSize && lhs.aiLineLimit == rhs.aiLineLimit
+    }
+
+    var body: some View {
+        if isUser {
+            HStack(alignment: .top, spacing: 4) {
+                Text(">")
+                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
+                Text(ChatMessageTextFormatter.literalText(text))
+                    .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        } else {
+            HStack(alignment: .top, spacing: 4) {
+                Text("$")
+                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color(red: 0.85, green: 0.47, blue: 0.34))
+                Text(ChatMessageTextFormatter.inlineMarkdown(compactText(stripDirectives(text))))
+                    .font(.system(size: fontSize, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(aiLineLimit)
+                    .truncationMode(.tail)
+            }
+        }
+    }
+
+    private func compactText(_ text: String) -> String {
+        text.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .reduce(into: [String]()) { result, line in
+                if line.isEmpty && (result.last?.isEmpty ?? true) { return }
+                result.append(line)
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 private func stripDirectives(_ text: String) -> String {
     // Match ::directive-name{...} patterns (may span multiple lines)
     // Use a simple approach: remove lines that start with ::word{ or are continuation of a directive

@@ -109,13 +109,16 @@ final class AppState {
         //    process exit instead of synthesizing idle and risking false-idle mid-thought.
         //    - No tool + no monitor: 60s (likely lost Stop event)
         //    - Has tool + no monitor: 180s (long build / deep thinking with missed exit)
+        //    - waitingApproval/Question + no monitor: 300s (connection likely dropped)
         for (key, session) in sessions
             where processMonitors[key] == nil
-            && session.status != .idle
-            && session.status != .waitingApproval
-            && session.status != .waitingQuestion {
+            && session.status != .idle {
             let elapsed = -session.lastActivity.timeIntervalSinceNow
-            let threshold: TimeInterval = session.currentTool != nil ? 180 : 60
+            let threshold: TimeInterval
+            switch session.status {
+            case .waitingApproval, .waitingQuestion: threshold = 300
+            default: threshold = session.currentTool != nil ? 180 : 60
+            }
             if elapsed > threshold {
                 sessions[key]?.status = .idle
                 sessions[key]?.currentTool = nil
@@ -128,6 +131,7 @@ final class AppState {
         // follow-up hook activity for a long time and there isn't even a live tool/description,
         // reset that silent processing state back to idle.
         let monitoredThinkingTimeout: TimeInterval = 300
+        let nativeAppThinkingTimeout: TimeInterval = 30
         let codexTerminalTurnSettleTime: TimeInterval = 3
         for (key, session) in sessions
             where processMonitors[key] != nil
@@ -139,6 +143,12 @@ final class AppState {
                elapsed >= codexTerminalTurnSettleTime,
                let finishedAt = Self.nativeAppFinishedTurnTimestamp(sessionId: key, session: session),
                finishedAt >= session.lastActivity.addingTimeInterval(-1) {
+                sessions[key]?.status = .idle
+                continue
+            }
+            // Native apps write transcripts synchronously — if the transcript check above
+            // didn't find a stop marker after 30s, the session is almost certainly idle.
+            if session.isNativeAppMode, elapsed > nativeAppThinkingTimeout {
                 sessions[key]?.status = .idle
                 continue
             }
@@ -160,6 +170,18 @@ final class AppState {
                     handleProcessExit(sessionId: key, exitedProcess: process)
                 }
             }
+        }
+
+        // 3b. Native app sessions (OpenCode desktop, Codex app, etc.) whose app is no longer
+        //     running should be cleaned up — these apps can't send SessionEnd when force-quit.
+        //     Don't check PID liveness here: the dedup in integrateDiscovered may have
+        //     reattached a CLI PID to the old native app session, keeping it alive incorrectly.
+        let runningBundleIds = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+        for (key, session) in sessions {
+            guard session.isNativeAppMode,
+                  let bundleId = session.termBundleId,
+                  !runningBundleIds.contains(bundleId) else { continue }
+            removeSession(key)
         }
 
         // 4. Remove idle sessions past timeout (user setting, or 10 min default for no-monitor sessions)
@@ -1511,10 +1533,18 @@ final class AppState {
             snapshot.tmuxEnv = p.tmuxEnv
             snapshot.termBundleId = p.termBundleId
             snapshot.lastActivity = p.lastActivity
-            // Restore persisted cliPid — enables immediate process monitoring for all CLIs
+            // Restore persisted cliPid only if the process is still alive — avoids
+            // stale sessions reappearing briefly after the app or IDE restarts (#46).
             if let pid = p.cliPid, pid > 0 {
-                snapshot.cliPid = pid
-                snapshot.cliStartTime = p.cliStartTime
+                let identity = ProcessIdentity(pid: pid, startTime: p.cliStartTime)
+                if Self.isLiveProcess(identity) {
+                    snapshot.cliPid = pid
+                    snapshot.cliStartTime = p.cliStartTime
+                }
+            }
+            // Skip sessions whose process is dead and status was idle — nothing to show.
+            if snapshot.cliPid == nil && snapshot.status == .idle && snapshot.lastUserPrompt == nil {
+                continue
             }
             sessions[p.sessionId] = snapshot
             refreshProviderTitle(for: p.sessionId)
@@ -1694,9 +1724,18 @@ final class AppState {
             // file-based discovery produce different session IDs for the same process).
             // Only dedup when PID matches (or discovered has no PID), so concurrent
             // sessions in the same repo aren't incorrectly merged.
+            // Never merge a discovery (CLI) session with an existing native app session —
+            // they're fundamentally different even if they share source + cwd.
             let duplicateKey = sessions.first(where: { (_, existing) in
                 guard existing.source == info.source,
                       existing.cwd != nil, existing.cwd == info.cwd else { return false }
+                // Don't merge CLI discovery into a stale native app session whose app has quit —
+                // the PID was likely reattached incorrectly. If the native app IS running, allow merge.
+                if existing.isNativeAppMode,
+                   let bid = existing.termBundleId,
+                   !NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == bid }) {
+                    return false
+                }
                 // If we have PIDs for both and the existing one is still alive, they must match.
                 // Dead persisted PIDs should not block dedup / reattachment.
                 if let discoveredPid = info.pid, let existingPid = existing.cliPid,
@@ -1847,9 +1886,11 @@ final class AppState {
 
             guard let file = bestFile else { continue }
 
-            // Skip stale transcripts: only show sessions active within last 5 minutes
-            // This filters out orphaned processes (terminal closed but process survived)
-            if bestDate.timeIntervalSinceNow < -300 { continue }
+            // Skip stale transcripts: only show sessions active within last 5 minutes.
+            // When processStart is unknown (proc_pidinfo failed), use a tighter 30s window
+            // to avoid resurrecting zombie sessions from stale transcript files.
+            let freshnessLimit: TimeInterval = processStart != nil ? -300 : -30
+            if bestDate.timeIntervalSinceNow < freshnessLimit { continue }
 
             let sessionId = String(file.dropLast(6))
             guard !seenSessionIds.contains(sessionId) else { continue }
@@ -2124,7 +2165,8 @@ final class AppState {
             let processStart = getProcessStartTime(pid)
             let chatsBase = "\(tmpBase)/\(projectDir)/chats"
             guard let best = findMostRecentGeminiSession(in: chatsBase, after: processStart, fm: fm) else { continue }
-            if best.modified.timeIntervalSinceNow < -300 { continue }
+            let geminiFreshnessLimit: TimeInterval = processStart != nil ? -300 : -30
+            if best.modified.timeIntervalSinceNow < geminiFreshnessLimit { continue }
 
             let (sessionId, model, messages) = readRecentFromGeminiTranscript(path: best.path)
             guard !sessionId.isEmpty, !seenSessionIds.contains(sessionId) else { continue }
@@ -2280,7 +2322,8 @@ final class AppState {
             let processStart = getProcessStartTime(pid)
             let transcriptBase = "\(projectsBase)/\(cwd.appProjectDirEncoded())/agent-transcripts"
             guard let best = findMostRecentCursorTranscript(in: transcriptBase, after: processStart, fm: fm) else { continue }
-            if best.modified.timeIntervalSinceNow < -300 { continue }
+            let cursorFreshnessLimit: TimeInterval = processStart != nil ? -300 : -30
+            if best.modified.timeIntervalSinceNow < cursorFreshnessLimit { continue }
 
             let sessionId = ((best.path as NSString).lastPathComponent as NSString).deletingPathExtension
             guard !sessionId.isEmpty, !seenSessionIds.contains(sessionId) else { continue }
@@ -2692,8 +2735,9 @@ final class AppState {
 
             let modifiedAt = (try? fm.attributesOfItem(atPath: bestFile))?[.modificationDate] as? Date ?? Date()
 
-            // Skip stale transcripts (same as Claude: 5 min freshness filter)
-            if modifiedAt.timeIntervalSinceNow < -300 { continue }
+            // Skip stale transcripts: tighter window when processStart is unknown
+            let codexFreshnessLimit: TimeInterval = processStart != nil ? -300 : -30
+            if modifiedAt.timeIntervalSinceNow < codexFreshnessLimit { continue }
 
             let (model, messages) = readRecentFromCodexTranscript(path: bestFile)
 

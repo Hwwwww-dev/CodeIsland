@@ -590,6 +590,7 @@ private struct AppearancePage: View {
     @AppStorage(SettingsKey.aiMessageLines) private var aiMessageLines = SettingsDefaults.aiMessageLines
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
+    @AppStorage(SettingsKey.collapsedWidthScale) private var collapsedWidthScale = SettingsDefaults.collapsedWidthScale
 
     var body: some View {
         Form {
@@ -611,6 +612,22 @@ private struct AppearancePage: View {
                 } label: {
                     Text(l10n["max_visible_sessions"])
                     Text(l10n["max_visible_sessions_desc"])
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(l10n["collapsed_width_scale"])
+                        Spacer()
+                        Text("\(collapsedWidthScale)%")
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    Slider(value: Binding(
+                        get: { Double(collapsedWidthScale) },
+                        set: { collapsedWidthScale = Int($0) }
+                    ), in: 50...150, step: 10)
+                    Text(l10n["collapsed_width_scale_desc"])
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 

@@ -85,6 +85,9 @@ def _send_event(payload, expects_response):
             response = sock.recv(65536)
             return response.decode("utf-8") if response else None
         return None
+    except (OSError, socket.error):
+        # Socket may not exist or server may have shut down — fail silently (#45)
+        return None
     finally:
         try:
             sock.close()

@@ -67,6 +67,9 @@ enum SettingsKey {
     // Tool status display
     static let showToolStatus = "showToolStatus"              // true = detailed, false = simple
 
+    // Island collapsed width scale for non-notch screens (percentage: 50–150, default 100)
+    static let collapsedWidthScale = "collapsedWidthScale"
+
 }
 
 struct SettingsDefaults {
@@ -103,6 +106,8 @@ struct SettingsDefaults {
     static let sessionGroupingMode = "all"
 
     static let showToolStatus = true
+
+    static let collapsedWidthScale = 100  // percentage
 }
 
 @MainActor
@@ -139,6 +144,7 @@ class SettingsManager {
             SettingsKey.mascotSpeed: SettingsDefaults.mascotSpeed,
             SettingsKey.sessionGroupingMode: SettingsDefaults.sessionGroupingMode,
             SettingsKey.showToolStatus: SettingsDefaults.showToolStatus,
+            SettingsKey.collapsedWidthScale: SettingsDefaults.collapsedWidthScale,
         ])
     }
 

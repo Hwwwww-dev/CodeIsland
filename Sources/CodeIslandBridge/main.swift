@@ -308,7 +308,7 @@ if let source = sourceTag {
 json["_ppid"] = getppid()
 
 // --- Serialize enriched JSON ---
-guard let enriched = try? JSONSerialization.data(withJSONObject: json) else { exit(1) }
+guard let enriched = try? JSONSerialization.data(withJSONObject: json) else { exit(0) }
 
 // --- Connect to Unix socket ---
 guard let sock = connectSocket(socketPath) else {
