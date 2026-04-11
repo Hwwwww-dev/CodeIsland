@@ -38,8 +38,9 @@ function sendAndWaitResponse(json, timeoutMs = 300000) {
   });
 }
 
-// v1.3.11+ requires default export to be an object with a server() entrypoint
+// v1.3.11+ requires default export with server() entrypoint; v1.4+ requires id field
 export default {
+  id: "codeisland",
   server: async ({ client, serverUrl }) => {
     const pid = process.pid;
     const serverPort = serverUrl ? parseInt(serverUrl.port) || 4096 : 4096;

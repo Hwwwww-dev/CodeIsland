@@ -225,6 +225,7 @@ struct ConfigInstaller {
     private static let opencodePluginDir = NSHomeDirectory() + "/.config/opencode/plugins"
     private static let opencodePluginPath = NSHomeDirectory() + "/.config/opencode/plugins/codeisland.js"
     private static let opencodeConfigPath = NSHomeDirectory() + "/.config/opencode/config.json"
+    private static let opencodeConfigPathNew = NSHomeDirectory() + "/.config/opencode/opencode.json"
 
     // MARK: - Install / Uninstall
 
@@ -806,34 +807,50 @@ struct ConfigInstaller {
         try? fm.createDirectory(atPath: opencodePluginDir, withIntermediateDirectories: true)
         guard fm.createFile(atPath: opencodePluginPath, contents: Data(source.utf8)) else { return false }
 
-        // Register in opencode config.json
+        // Register in opencode.json only (v1.4+ reads this; config.json causes double-load)
         let pluginRef = "file://\(opencodePluginPath)"
         var config: [String: Any] = [:]
-        if let data = fm.contents(atPath: opencodeConfigPath),
+        if let data = fm.contents(atPath: opencodeConfigPathNew),
            let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             config = parsed
         }
         var plugins = config["plugin"] as? [String] ?? []
-        // Remove old vibe-island entries and any stale codeisland entries
         plugins.removeAll { $0.contains("vibe-island") || $0.contains(HookId.current) }
         plugins.append(pluginRef)
         config["plugin"] = plugins
+        if config["$schema"] == nil {
+            config["$schema"] = "https://opencode.ai/config.json"
+        }
         if let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
-            fm.createFile(atPath: opencodeConfigPath, contents: data)
+            fm.createFile(atPath: opencodeConfigPathNew, contents: data)
+        }
+
+        // Clean up legacy config.json registration to prevent double-load
+        if let legacyData = fm.contents(atPath: opencodeConfigPath),
+           var legacyConfig = try? JSONSerialization.jsonObject(with: legacyData) as? [String: Any],
+           var legacyPlugins = legacyConfig["plugin"] as? [String],
+           legacyPlugins.contains(where: { $0.contains(HookId.current) }) {
+            legacyPlugins.removeAll { $0.contains("vibe-island") || $0.contains(HookId.current) }
+            legacyConfig["plugin"] = legacyPlugins.isEmpty ? nil : legacyPlugins
+            if let data = try? JSONSerialization.data(withJSONObject: legacyConfig, options: [.prettyPrinted, .sortedKeys]) {
+                fm.createFile(atPath: opencodeConfigPath, contents: data)
+            }
         }
         return true
     }
 
     private static func uninstallOpencodePlugin(fm: FileManager) {
         try? fm.removeItem(atPath: opencodePluginPath)
-        // Remove from config
-        guard let data = fm.contents(atPath: opencodeConfigPath),
-              var config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              var plugins = config["plugin"] as? [String] else { return }
-        plugins.removeAll { $0.contains(HookId.current) }
-        config["plugin"] = plugins.isEmpty ? nil : plugins
-        if let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
-            fm.createFile(atPath: opencodeConfigPath, contents: data)
+        // Remove from opencode.json and legacy config.json
+        for configPath in [opencodeConfigPathNew, opencodeConfigPath] {
+            guard let data = fm.contents(atPath: configPath),
+                  var config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  var plugins = config["plugin"] as? [String] else { continue }
+            plugins.removeAll { $0.contains(HookId.current) }
+            config["plugin"] = plugins.isEmpty ? nil : plugins
+            if let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
+                fm.createFile(atPath: configPath, contents: data)
+            }
         }
     }
 
@@ -841,11 +858,15 @@ struct ConfigInstaller {
     private static let opencodePluginVersion = "v3"
 
     private static func isOpencodePluginInstalled(fm: FileManager) -> Bool {
-        guard fm.fileExists(atPath: opencodePluginPath),
-              let data = fm.contents(atPath: opencodeConfigPath),
-              let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let plugins = config["plugin"] as? [String] else { return false }
-        guard plugins.contains(where: { $0.contains(HookId.current) }) else { return false }
+        guard fm.fileExists(atPath: opencodePluginPath) else { return false }
+        // Check registration in either config file (prefer opencode.json)
+        let registered = [opencodeConfigPathNew, opencodeConfigPath].contains { configPath in
+            guard let data = fm.contents(atPath: configPath),
+                  let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let plugins = config["plugin"] as? [String] else { return false }
+            return plugins.contains(where: { $0.contains(HookId.current) })
+        }
+        guard registered else { return false }
         // Check version: if installed plugin is outdated, report as not installed to trigger update
         if let existing = fm.contents(atPath: opencodePluginPath),
            let str = String(data: existing, encoding: .utf8) {
