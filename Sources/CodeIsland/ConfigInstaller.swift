@@ -838,7 +838,7 @@ struct ConfigInstaller {
     }
 
     /// Current OpenCode plugin version — bump when codeisland-opencode.js changes
-    private static let opencodePluginVersion = "v2"
+    private static let opencodePluginVersion = "v3"
 
     private static func isOpencodePluginInstalled(fm: FileManager) -> Bool {
         guard fm.fileExists(atPath: opencodePluginPath),
