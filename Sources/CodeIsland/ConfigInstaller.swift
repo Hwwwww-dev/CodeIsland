@@ -291,10 +291,46 @@ struct ConfigInstaller {
                 ("PreCompact", 5, true),
             ]
         ),
+        // AntiGravity — Claude Code fork
+        CLIConfig(
+            name: "AntiGravity", source: "antigravity",
+            configPath: ".antigravity/settings.json", configKey: "hooks",
+            format: .claude,
+            events: [
+                ("UserPromptSubmit", 5, true),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, true),
+                ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
+                ("Stop", 5, true),
+                ("SubagentStart", 5, true),
+                ("SubagentStop", 5, true),
+                ("Notification", 86400, false),
+                ("PreCompact", 5, true),
+            ]
+        ),
         // WorkBuddy — Claude Code fork
         CLIConfig(
             name: "WorkBuddy", source: "workbuddy",
             configPath: ".workbuddy/settings.json", configKey: "hooks",
+            format: .claude,
+            events: [
+                ("UserPromptSubmit", 5, true),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, true),
+                ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
+                ("Stop", 5, true),
+                ("SubagentStart", 5, true),
+                ("SubagentStop", 5, true),
+                ("Notification", 86400, false),
+                ("PreCompact", 5, true),
+            ]
+        ),
+        // Hermes — Claude Code fork
+        CLIConfig(
+            name: "Hermes", source: "hermes",
+            configPath: ".hermes/settings.json", configKey: "hooks",
             format: .claude,
             events: [
                 ("UserPromptSubmit", 5, true),
