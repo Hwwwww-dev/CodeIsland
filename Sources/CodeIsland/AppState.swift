@@ -38,6 +38,8 @@ final class AppState {
     private var completionQueue: [String] = []
     /// Mouse must enter the panel before auto-collapse is allowed (prevents instant dismiss)
     var completionHasBeenEntered = false
+    /// Auto-collapse timer fired but mouse is inside panel — defer collapse until mouse leaves
+    var deferCollapseOnMouseLeave = false
     private var processMonitors: [String: (source: DispatchSourceProcess, process: ProcessIdentity)] = [:]
     private var exitingSessions: [String: ProcessIdentity] = [:]
     private var saveTimer: Timer?
@@ -621,6 +623,7 @@ final class AppState {
         activeSessionId = sessionId
         surface = .completionCard(sessionId: sessionId)
         completionHasBeenEntered = false
+        deferCollapseOnMouseLeave = false
 
         autoCollapseTask?.cancel()
         autoCollapseTask = Task { @MainActor in
@@ -633,9 +636,15 @@ final class AppState {
     func cancelCompletionQueue() {
         autoCollapseTask?.cancel()
         completionQueue.removeAll()
+        deferCollapseOnMouseLeave = false
     }
 
     private func showNextCompletionOrCollapse() {
+        // Once the mouse has entered the completion card, defer collapse until it leaves
+        if completionHasBeenEntered {
+            deferCollapseOnMouseLeave = true
+            return
+        }
         // showNextPending handles: interactive items first, then completionQueue, then collapse
         if showNextPending() { return }
         withAnimation(NotchAnimation.close) {
