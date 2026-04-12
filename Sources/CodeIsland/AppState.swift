@@ -243,11 +243,18 @@ final class AppState {
         guard let path = executablePath(for: pid)?.lowercased() else { return false }
         switch source {
         case "cursor":     return path.contains("/cursor.app/contents/")
+        case "trae":       return path.contains("/trae.app/contents/")
+        case "traecn":     return path.contains("/trae.app/contents/") || path.contains("/traecn.app/contents/")
         case "qoder":      return path.contains("/qoder.app/contents/")
         case "droid":      return path.contains("/factory.app/contents/")
         case "codebuddy":  return path.contains("/codebuddy.app/contents/")
+        case "codybuddycn": return path.contains("/codebuddycn.app/contents/") || path.contains("/codebuddy.app/contents/")
+        case "stepfun":    return path.contains("/stepfun.app/contents/")
         case "codex":      return path.contains("/codex.app/contents/")
         case "opencode":   return path.contains("/opencode.app/contents/")
+        case "antigravity": return path.contains("/antigravity.app/contents/")
+        case "workbuddy":   return path.contains("/workbuddy.app/contents/")
+        case "hermes":      return path.contains("/hermes.app/contents/")
         default:           return false
         }
     }
@@ -543,11 +550,18 @@ final class AppState {
         case "codex":      return findCodexPids(candidatePids: candidatePids)
         case "gemini":     return findGeminiPids(candidatePids: candidatePids)
         case "cursor":     return findCursorPids(candidatePids: candidatePids)
+        case "trae":       return findTraePids(candidatePids: candidatePids)
+        case "traecn":     return findTraeCNPids(candidatePids: candidatePids)
         case "copilot":    return findCopilotPids(candidatePids: candidatePids)
         case "qoder":      return findQoderPids(candidatePids: candidatePids)
         case "droid":      return findFactoryPids(candidatePids: candidatePids)
         case "codebuddy":  return findCodeBuddyPids(candidatePids: candidatePids)
+        case "codybuddycn": return findCodyBuddyCNPids(candidatePids: candidatePids)
+        case "stepfun":    return findStepFunPids(candidatePids: candidatePids)
         case "opencode":   return findOpenCodePids(candidatePids: candidatePids)
+        case "antigravity": return findAntiGravityPids(candidatePids: candidatePids)
+        case "workbuddy":  return findWorkBuddyPids(candidatePids: candidatePids)
+        case "hermes":     return findHermesPids(candidatePids: candidatePids)
         default:           return []
         }
     }
@@ -2024,6 +2038,113 @@ final class AppState {
             argSubstrings: [
                 "/@tencent-ai/codebuddy-code/bin/codebuddy",
                 "/opt/homebrew/bin/codebuddy",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findCodyBuddyCNPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/codebuddycn.app/contents/macos/electron",
+                "/codebuddycn.app/contents/frameworks/codebuddycn helper",
+                "/.codybuddycn/",
+                "/.codebuddycn/",
+            ],
+            argSubstrings: [
+                "/.codybuddycn/",
+                "/.codebuddycn/",
+                "/opt/homebrew/bin/codybuddycn",
+                "/opt/homebrew/bin/codebuddycn",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findStepFunPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/stepfun.app/contents/macos/stepfun",
+                "/.stepfun/",
+            ],
+            argSubstrings: [
+                "/opt/homebrew/bin/stepfun",
+                "/.stepfun/",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findTraePids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/trae.app/contents/macos/trae",
+                "/trae.app/contents/frameworks/trae helper",
+                "/.trae/",
+            ],
+            argSubstrings: [
+                "/opt/homebrew/bin/trae",
+                "/.trae/",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findTraeCNPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/traecn.app/contents/macos/trae",
+                "/trae-cn.app/contents/macos/trae",
+                "/.traecn/",
+                "/.trae-cn/",
+            ],
+            argSubstrings: [
+                "/opt/homebrew/bin/traecn",
+                "/opt/homebrew/bin/trae-cn",
+                "/.traecn/",
+                "/.trae-cn/",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findAntiGravityPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/.antigravity/antigravity/bin/antigravity",
+                "/antigravity.app/contents/macos/antigravity",
+            ],
+            argSubstrings: [
+                "/.antigravity/antigravity/bin/antigravity",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findWorkBuddyPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/workbuddy.app/contents/macos/workbuddy",
+                "/.workbuddy/",
+            ],
+            argSubstrings: [
+                "/opt/homebrew/bin/workbuddy",
+                "/.workbuddy/",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findHermesPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/.local/bin/hermes",
+                "/hermes.app/contents/macos/hermes",
+                "/.hermes/hermes-agent/",
+            ],
+            argSubstrings: [
+                "/.local/bin/hermes",
+                "/.hermes/",
             ],
             candidatePids: candidatePids
         )
