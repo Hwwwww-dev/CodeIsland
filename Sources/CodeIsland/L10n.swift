@@ -15,7 +15,9 @@ final class L10n: ObservableObject {
     var effectiveLanguage: String {
         if language == "system" {
             let preferred = Locale.preferredLanguages.first ?? "en"
-            return preferred.hasPrefix("zh") ? "zh" : preferred.hasPrefix("tr") ? "tr" : "en"
+            if preferred.hasPrefix("zh") { return "zh" }
+            if preferred.hasPrefix("tr") { return "tr" }
+            return "en"
         }
         return language
     }
@@ -26,7 +28,7 @@ final class L10n: ObservableObject {
 
     // MARK: - Translations
 
-    private static let strings: [String: [String: String]] = [
+    static let strings: [String: [String: String]] = [
         "en": en,
         "zh": zh,
         "tr": tr,
@@ -211,6 +213,8 @@ final class L10n: ObservableObject {
         "update_failed_title": "Update Failed",
         "update_failed_body": "Could not install the update: %@",
         "update_manual_download": "Download Manually",
+        "update_installing": "Installing update...",
+        "update_retry": "Retry",
         "update_homebrew_title": "Update Available",
         "update_homebrew_body": "CodeIsland %@ is available. Since you installed via Homebrew, please run:",
         "update_homebrew_command": "brew upgrade codeisland",
@@ -422,6 +426,8 @@ final class L10n: ObservableObject {
         "update_failed_title": "更新失败",
         "update_failed_body": "无法安装更新：%@",
         "update_manual_download": "手动下载",
+        "update_installing": "正在安装更新...",
+        "update_retry": "重试",
         "update_homebrew_title": "发现新版本",
         "update_homebrew_body": "CodeIsland %@ 已发布。由于您通过 Homebrew 安装，请运行：",
         "update_homebrew_command": "brew upgrade codeisland",
@@ -451,7 +457,7 @@ final class L10n: ObservableObject {
         "n_sessions": "个会话",
         "scroll_for_more": "向下滚动查看更多",
         "scroll_hidden": "个未显示",
-"lines": "行",
+        "lines": "行",
     ]
 
     private static let tr: [String: String] = [
@@ -633,6 +639,8 @@ final class L10n: ObservableObject {
         "update_failed_title": "Güncelleme Başarısız",
         "update_failed_body": "Güncelleme yüklenemedi: %@",
         "update_manual_download": "Manuel İndir",
+        "update_installing": "Güncelleme yükleniyor...",
+        "update_retry": "Tekrar Dene",
         "update_homebrew_title": "Güncelleme Mevcut",
         "update_homebrew_body": "CodeIsland %@ mevcut. Homebrew ile yüklediğiniz için, lütfen şunu çalıştırın:",
         "update_homebrew_command": "brew upgrade codeisland",

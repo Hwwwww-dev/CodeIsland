@@ -11,8 +11,8 @@ final class L10nTests: XCTestCase {
     }
 
     func testTurkishTranslationsContainAllKeysPresentInEnglish() {
-        let enKeys = Set(L10n.strings["en"]?.keys ?? [])
-        let trKeys = Set(L10n.strings["tr"]?.keys ?? [])
+        let enKeys = Set(L10n.strings["en"]?.keys ?? Dictionary<String, String>().keys)
+        let trKeys = Set(L10n.strings["tr"]?.keys ?? Dictionary<String, String>().keys)
 
         let missingKeys = enKeys.subtracting(trKeys)
         XCTAssertTrue(missingKeys.isEmpty, "Turkish is missing keys: \(missingKeys)")

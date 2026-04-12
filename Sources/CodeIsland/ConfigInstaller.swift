@@ -1,4 +1,5 @@
 import Foundation
+import CodeIslandCore
 
 // MARK: - Hook Identifiers
 
@@ -83,7 +84,7 @@ struct ConfigInstaller {
     private static let bridgePath = codeislandDir + "/codeisland-bridge"
     private static let hookScriptPath = codeislandDir + "/codeisland-hook.sh"
     private static let hookCommand = "~/.codeisland/codeisland-hook.sh"
-    private static let customCLIConfigsKey = "custom_cli_configs_v1"
+    private static let customCLIConfigsKey = SessionSnapshot.customCLIConfigsKey
     /// Absolute path for external CLI hooks — avoids tilde expansion issues in IDE environments
     private static let bridgeCommand = codeislandDir + "/codeisland-bridge"
 
@@ -170,180 +171,70 @@ struct ConfigInstaller {
             name: "Trae", source: "trae",
             configPath: ".trae/hooks.json", configKey: "hooks",
             format: .flat,
-            events: [
-                ("beforeSubmitPrompt", 5, false),
-                ("beforeShellExecution", 5, false),
-                ("afterShellExecution", 5, false),
-                ("beforeReadFile", 5, false),
-                ("afterFileEdit", 5, false),
-                ("beforeMCPExecution", 5, false),
-                ("afterMCPExecution", 5, false),
-                ("afterAgentThought", 5, false),
-                ("afterAgentResponse", 5, false),
-                ("stop", 5, false),
-            ]
+            events: defaultEvents(for: .flat)
         ),
         // Trae CN
         CLIConfig(
             name: "Trae CN", source: "traecn",
             configPath: ".trae-cn/hooks.json", configKey: "hooks",
             format: .flat,
-            events: [
-                ("beforeSubmitPrompt", 5, false),
-                ("beforeShellExecution", 5, false),
-                ("afterShellExecution", 5, false),
-                ("beforeReadFile", 5, false),
-                ("afterFileEdit", 5, false),
-                ("beforeMCPExecution", 5, false),
-                ("afterMCPExecution", 5, false),
-                ("afterAgentThought", 5, false),
-                ("afterAgentResponse", 5, false),
-                ("stop", 5, false),
-            ]
+            events: defaultEvents(for: .flat)
         ),
         // Qoder — Claude Code fork
         CLIConfig(
             name: "Qoder", source: "qoder",
             configPath: ".qoder/settings.json", configKey: "hooks",
             format: .claude,
-            events: [
-                ("UserPromptSubmit", 5, true),
-                ("PreToolUse", 5, false),
-                ("PostToolUse", 5, true),
-                ("SessionStart", 5, false),
-                ("SessionEnd", 5, true),
-                ("Stop", 5, true),
-                ("SubagentStart", 5, true),
-                ("SubagentStop", 5, true),
-                ("Notification", 86400, false),
-                ("PreCompact", 5, true),
-            ]
+            events: defaultEvents(for: .claude)
         ),
         // Factory — Claude Code fork (uses "droid" as source identifier)
         CLIConfig(
             name: "Factory", source: "droid",
             configPath: ".factory/settings.json", configKey: "hooks",
             format: .claude,
-            events: [
-                ("UserPromptSubmit", 5, true),
-                ("PreToolUse", 5, false),
-                ("PostToolUse", 5, true),
-                ("SessionStart", 5, false),
-                ("SessionEnd", 5, true),
-                ("Stop", 5, true),
-                ("SubagentStart", 5, true),
-                ("SubagentStop", 5, true),
-                ("Notification", 86400, false),
-                ("PreCompact", 5, true),
-            ]
+            events: defaultEvents(for: .claude)
         ),
         // CodeBuddy — Claude Code fork
         CLIConfig(
             name: "CodeBuddy", source: "codebuddy",
             configPath: ".codebuddy/settings.json", configKey: "hooks",
             format: .claude,
-            events: [
-                ("UserPromptSubmit", 5, true),
-                ("PreToolUse", 5, false),
-                ("PostToolUse", 5, true),
-                ("SessionStart", 5, false),
-                ("SessionEnd", 5, true),
-                ("Stop", 5, true),
-                ("SubagentStart", 5, true),
-                ("SubagentStop", 5, true),
-                ("Notification", 86400, false),
-                ("PreCompact", 5, true),
-            ]
+            events: defaultEvents(for: .claude)
         ),
         // CodyBuddyCN — CodeBuddy CN variant
         CLIConfig(
             name: "CodyBuddyCN", source: "codybuddycn",
             configPath: ".codybuddycn/settings.json", configKey: "hooks",
             format: .claude,
-            events: [
-                ("UserPromptSubmit", 5, true),
-                ("PreToolUse", 5, false),
-                ("PostToolUse", 5, true),
-                ("SessionStart", 5, false),
-                ("SessionEnd", 5, true),
-                ("Stop", 5, true),
-                ("SubagentStart", 5, true),
-                ("SubagentStop", 5, true),
-                ("Notification", 86400, false),
-                ("PreCompact", 5, true),
-            ]
+            events: defaultEvents(for: .claude)
         ),
         // StepFun — Claude Code fork
         CLIConfig(
             name: "StepFun", source: "stepfun",
             configPath: ".stepfun/settings.json", configKey: "hooks",
             format: .claude,
-            events: [
-                ("UserPromptSubmit", 5, true),
-                ("PreToolUse", 5, false),
-                ("PostToolUse", 5, true),
-                ("SessionStart", 5, false),
-                ("SessionEnd", 5, true),
-                ("Stop", 5, true),
-                ("SubagentStart", 5, true),
-                ("SubagentStop", 5, true),
-                ("Notification", 86400, false),
-                ("PreCompact", 5, true),
-            ]
+            events: defaultEvents(for: .claude)
         ),
         // AntiGravity — Claude Code fork
         CLIConfig(
             name: "AntiGravity", source: "antigravity",
             configPath: ".antigravity/settings.json", configKey: "hooks",
             format: .claude,
-            events: [
-                ("UserPromptSubmit", 5, true),
-                ("PreToolUse", 5, false),
-                ("PostToolUse", 5, true),
-                ("SessionStart", 5, false),
-                ("SessionEnd", 5, true),
-                ("Stop", 5, true),
-                ("SubagentStart", 5, true),
-                ("SubagentStop", 5, true),
-                ("Notification", 86400, false),
-                ("PreCompact", 5, true),
-            ]
+            events: defaultEvents(for: .claude)
         ),
         // WorkBuddy — Claude Code fork
         CLIConfig(
             name: "WorkBuddy", source: "workbuddy",
             configPath: ".workbuddy/settings.json", configKey: "hooks",
             format: .claude,
-            events: [
-                ("UserPromptSubmit", 5, true),
-                ("PreToolUse", 5, false),
-                ("PostToolUse", 5, true),
-                ("SessionStart", 5, false),
-                ("SessionEnd", 5, true),
-                ("Stop", 5, true),
-                ("SubagentStart", 5, true),
-                ("SubagentStop", 5, true),
-                ("Notification", 86400, false),
-                ("PreCompact", 5, true),
-            ]
+            events: defaultEvents(for: .claude)
         ),
         // Hermes — Claude Code fork
         CLIConfig(
             name: "Hermes", source: "hermes",
             configPath: ".hermes/settings.json", configKey: "hooks",
             format: .claude,
-            events: [
-                ("UserPromptSubmit", 5, true),
-                ("PreToolUse", 5, false),
-                ("PostToolUse", 5, true),
-                ("SessionStart", 5, false),
-                ("SessionEnd", 5, true),
-                ("Stop", 5, true),
-                ("SubagentStart", 5, true),
-                ("SubagentStop", 5, true),
-                ("Notification", 86400, false),
-                ("PreCompact", 5, true),
-            ]
+            events: defaultEvents(for: .claude)
         ),
         // GitHub Copilot CLI
         CLIConfig(

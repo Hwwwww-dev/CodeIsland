@@ -7,7 +7,7 @@ public enum SessionTitleSource: String, Sendable, Codable {
 }
 
 public struct SessionSnapshot {
-    private static let customCLIConfigsKey = "custom_cli_configs_v1"
+    public static let customCLIConfigsKey = "custom_cli_configs_v1"
 
     public static let supportedSources: Set<String> = [
         "claude",

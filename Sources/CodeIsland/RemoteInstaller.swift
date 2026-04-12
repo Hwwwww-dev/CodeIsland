@@ -191,7 +191,10 @@ print(" · ".join(parts))
     }
 
     private static func runSSH(host: RemoteHost, command: String, timeout: TimeInterval) async -> RemoteCommandResult {
-        await withCheckedContinuation { continuation in
+        guard !host.sshTarget.isEmpty else {
+            return RemoteCommandResult(stdout: "", stderr: "invalid host", exitCode: -1)
+        }
+        return await withCheckedContinuation { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = sshArguments(host: host) + [command]

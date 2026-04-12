@@ -25,6 +25,12 @@ final class SSHForwarder {
     func connect(host: RemoteHost, localSocketPath: String) {
         disconnect()
 
+        let target = host.sshTarget
+        guard !target.isEmpty else {
+            status = .failed("invalid host")
+            return
+        }
+
         generation &+= 1
         let currentGeneration = generation
         status = .connecting

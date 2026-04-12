@@ -62,6 +62,11 @@ final class RemoteManager: ObservableObject {
 
     func connect(id: String) {
         guard let host = hosts.first(where: { $0.id == id }) else { return }
+        guard !host.sshTarget.isEmpty else {
+            connectionStatus[id] = .failed("invalid host")
+            lastMessage[id] = "invalid host"
+            return
+        }
 
         let forwarder = forwarders[id] ?? SSHForwarder()
         forwarders[id] = forwarder
