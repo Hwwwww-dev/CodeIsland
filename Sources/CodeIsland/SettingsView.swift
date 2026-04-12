@@ -293,6 +293,7 @@ private struct GeneralPage: View {
                     Text(l10n["system_language"]).tag("system")
                     Text("English").tag("en")
                     Text("中文").tag("zh")
+                    Text("Türkçe").tag("tr")
                 }
                 Toggle(l10n["launch_at_login"], isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, v in

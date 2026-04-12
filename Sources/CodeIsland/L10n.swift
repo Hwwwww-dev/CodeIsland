@@ -15,7 +15,7 @@ final class L10n: ObservableObject {
     var effectiveLanguage: String {
         if language == "system" {
             let preferred = Locale.preferredLanguages.first ?? "en"
-            return preferred.hasPrefix("zh") ? "zh" : "en"
+            return preferred.hasPrefix("zh") ? "zh" : preferred.hasPrefix("tr") ? "tr" : "en"
         }
         return language
     }
@@ -29,6 +29,7 @@ final class L10n: ObservableObject {
     private static let strings: [String: [String: String]] = [
         "en": en,
         "zh": zh,
+        "tr": tr,
     ]
 
     private static let en: [String: String] = [
@@ -450,6 +451,217 @@ final class L10n: ObservableObject {
         "n_sessions": "个会话",
         "scroll_for_more": "向下滚动查看更多",
         "scroll_hidden": "个未显示",
-        "lines": "行",
+"lines": "行",
+    ]
+
+    private static let tr: [String: String] = [
+        // Settings pages
+        "general": "Genel",
+        "behavior": "Davranış",
+        "appearance": "Görünüm",
+        "mascots": "Maskotlar",
+        "sound": "Ses",
+        "remote": "Uzaktan",
+        "hooks": "Hooks",
+        "about": "Hakkında",
+
+        // Language
+        "language": "Dil",
+        "system_language": "Sistem",
+
+        // General
+        "launch_at_login": "Girişte Aç",
+        "allow_horizontal_drag": "Yatay Sürüklemeye İzin Ver",
+        "allow_horizontal_drag_desc": "Paneli menü çubuğu boyunca sola veya sağa sürüklemeyi etkinleştir",
+        "display": "Ekran",
+        "auto": "Otomatik",
+        "builtin_display": "Dahili Ekran",
+        "notch": "(Çentik)",
+
+        // Behavior
+        "display_section": "Görüntüleme",
+        "hide_in_fullscreen": "Tam Ekran Gizle",
+        "hide_in_fullscreen_desc": "Herhangi bir uygulama tam ekran moduna girdiğinde paneli otomatik gizle",
+        "hide_when_no_session": "Aktif Oturum Yokken Otomatik Gizle",
+        "hide_when_no_session_desc": "AI ajanları çalışırken paneli tamamen gizle",
+        "smart_suppress": "Akıllı Bastırma",
+        "smart_suppress_desc": "Ajanın terminal sekmesi ön plandayken paneli otomatik genişletme",
+        "collapse_on_mouse_leave": "Fare Çıkınca Daralt",
+        "collapse_on_mouse_leave_desc": "Fare panelden ayrıldığında genişletilmiş paneli çentik durumuna geri daralt",
+        "shortcuts": "Kısayollar",
+        "shortcut_recording": "Kaydediliyor…",
+        "shortcut_none": "Ayarlanmamış",
+        "shortcut_togglePanel": "Paneli Aç/Kapa",
+        "shortcut_togglePanel_desc": "CodeIsland panelini aç veya kapat",
+        "shortcut_approve": "İzin Ver",
+        "shortcut_approve_desc": "Mevcut izin isteğini onayla",
+        "shortcut_approveAlways": "Her Zaman İzin Ver",
+        "shortcut_approveAlways_desc": "Onayla ve bu oturum için hatırla",
+        "shortcut_deny": "Reddet",
+        "shortcut_deny_desc": "Mevcut izin isteğini reddet",
+        "shortcut_skipQuestion": "Soruyu Atla",
+        "shortcut_skipQuestion_desc": "Mevcut soru istemini atla",
+        "shortcut_jumpToTerminal": "Terminale Git",
+        "shortcut_jumpToTerminal_desc": "Aktif oturumun terminaline geç",
+        "shortcut_conflict": "Şu kısayolla çakışıyor:",
+        "sessions": "Oturumlar",
+        "session_cleanup": "Boş Oturum Temizleme",
+        "session_cleanup_desc": "Belirlenen süre içinde aktivitesi olmayan oturumları otomatik kaldır",
+        "no_cleanup": "Asla",
+        "10_minutes": "10 Dakika",
+        "30_minutes": "30 Dakika",
+        "1_hour": "1 Saat",
+        "2_hours": "2 Saat",
+        "rotation_interval": "Oturum Dönüş Aralığı",
+        "rotation_interval_desc": "Daraltılmış çubuğun aktif oturumlar arasında ne sıklıkla geçtiği",
+        "3_seconds": "3 Saniye",
+        "5_seconds": "5 Saniye",
+        "8_seconds": "8 Saniye",
+        "10_seconds": "10 Saniye",
+        "tool_history_limit": "Araç Geçmişi Limiti",
+        "tool_history_limit_desc": "Oturum başına gösterilen son araç çağrı sayısı",
+
+        // Appearance
+        "preview": "Önizleme",
+        "panel": "Panel",
+        "max_visible_sessions": "Maksimum Görünür Oturum",
+        "max_visible_sessions_desc": "Bu sınırdan fazla oturumlar kaydırılabilir olacak",
+        "collapsed_width_scale": "Ada Genişliği",
+        "collapsed_width_scale_desc": "Çentiksiz ekranlarda daraltılmış ada genişliğini ölçekle",
+        "default": "Varsayılan",
+        "content": "İçerik",
+        "content_font_size": "İçerik Yazı Boyutu",
+        "11pt_default": "11pt (Varsayılan)",
+        "ai_reply_lines": "AI Yanıt Satırları",
+        "1_line_default": "1 Satır (Varsayılan)",
+        "2_lines": "2 Satır",
+        "3_lines": "3 Satır",
+        "5_lines": "5 Satır",
+        "unlimited": "Sınırsız",
+        "show_agent_details": "Ajan Aktivite Detaylarını Göster",
+        "show_tool_status": "Kompakt Çubukta Ayrıntılı Araç Aktivitesi",
+
+        // Mascots
+        "preview_status": "Durumu Önizleme",
+        "processing": "İşleniyor",
+        "idle": "Boşta",
+        "waiting_approval": "Onay Bekliyor",
+        "mascot_speed": "Animasyon Hızı",
+        "speed_off": "Kapalı",
+        "speed_slow": "0.5× Yavaş",
+        "speed_normal": "1× Normal",
+        "speed_fast": "1.5× Hızlı",
+        "speed_very_fast": "2× Çok Hızlı",
+
+        // Sound
+        "enable_sound": "Ses Efektlerini Etkinleştir",
+        "volume": "Ses Düzeyi",
+        "session_start": "Oturum Başlangıcı",
+        "new_claude_session": "Yeni Claude Code oturumu",
+        "task_complete": "Görev Tamamlandı",
+        "ai_completed_reply": "AI bu tur yanıtını tamamladı",
+        "task_error": "Görev Hatası",
+        "tool_or_api_error": "Araç veya API hatası",
+        "system_section": "Sistem",
+        "boot_sound": "Başlangıç Sesi",
+        "boot_sound_desc": "CodeIsland başladığında bir jingle çal",
+        "interaction": "Etkileşim",
+        "approval_needed": "Onay Gerekli",
+        "waiting_approval_desc": "İzin onayı veya cevap bekleniyor",
+        "task_confirmation": "Görev Onayı",
+        "you_sent_message": "Bir mesaj gönderdin",
+        "custom_sound": "Özel",
+        "choose_sound_file": "Ses Dosyası Seç",
+        "reset_to_default": "Varsayılana Sıfırla",
+        "custom_sound_set": "Özel: %@",
+
+        // Hooks
+        "cli_status": "CLI Durumu",
+        "activated": "Etkinleştirildi",
+        "not_installed": "Yüklenmemiş",
+        "not_detected": "Algılanmadı",
+        "management": "Yönetim",
+        "reinstall": "Yeniden Yükle",
+        "uninstall": "Kaldır",
+        "hooks_installed": "Hooks başarıyla yüklendi",
+        "install_failed": "Yükleme başarısız",
+        "hooks_uninstalled": "Hooks kaldırıldı",
+        "remote_hosts": "Uzaktan Hostlar",
+        "remote_hosts_empty": "Henüz uzaktan host yok. Oturumları SSH üzerinden izlemek için aşağıya bir tane ekleyin.",
+        "add_remote_host": "Uzaktan Host Ekle",
+        "remote_name": "Görünen Ad",
+        "remote_host": "Host veya SSH Takma Adı",
+        "remote_user": "SSH Kullanıcı (İsteğe Bağlı)",
+        "remote_port": "SSH Bağlantı Noktası (İsteğe Bağlı)",
+        "remote_identity": "Kimlik Dosyası (İsteğe Bağlı)",
+        "remote_auto_connect": "Başlangıçta Otomatik Bağlan",
+        "remote_add_button": "Host Ekle",
+        "remote_hint": "Host alanı normal bir hostname veya ~/.ssh/config dosyanızdaki takma ad olabilir. CodeIsland küçük bir uzak hook betiği yükler ve olayları SSH üzerinden iletir.",
+        "remote_connect": "Bağlan",
+        "remote_connecting": "Bağlanıyor…",
+        "remote_connected": "Bağlı",
+        "remote_disconnected": "Bağlı Değil",
+        "remote_disconnect": "Bağlantıyı Kes",
+        "remote_remove": "Kaldır",
+
+        // About
+        "about_desc1": "macOS için gerçek zamanlı AI kodlama ajanı durum paneli",
+        "about_desc2": "Unix socket IPC üzerinden 8 CLI/IDE aracını destekler",
+
+        // Window
+        "settings_title": "CodeIsland Ayarları",
+
+        // Menu
+        "settings_ellipsis": "Ayarlar...",
+        "check_for_updates": "Güncellemeleri Kontrol Et...",
+        "export_diagnostics": "Tanılamaları Dışa Aktar...",
+        "export_diagnostics_desc": "Hata raporları için günlükler, ayarlar ve oturum durumu içeren bir zip oluştur",
+        "reinstall_hooks": "Hooks Yeniden Yükle",
+        "remove_hooks": "Hooks Kaldır",
+        "quit": "Çık",
+
+        // Update
+        "update_available_title": "Güncelleme Mevcut",
+        "update_available_body": "CodeIsland %@ mevcut (şimdiki: %@). İndirmek ister misiniz?",
+        "download_update": "İndir",
+        "later": "Sonra",
+        "no_update_title": "Güncel",
+        "no_update_body": "CodeIsland %@ en son sürüm.",
+        "ok": "Tamam",
+        "update_now": "Şimdi Güncelle",
+        "update_downloading": "Güncelleme indiriliyor...",
+        "update_failed_title": "Güncelleme Başarısız",
+        "update_failed_body": "Güncelleme yüklenemedi: %@",
+        "update_manual_download": "Manuel İndir",
+        "update_homebrew_title": "Güncelleme Mevcut",
+        "update_homebrew_body": "CodeIsland %@ mevcut. Homebrew ile yüklediğiniz için, lütfen şunu çalıştırın:",
+        "update_homebrew_command": "brew upgrade codeisland",
+        "update_copy_command": "Komutu Kopyala",
+
+        // NotchPanel
+        "mute": "Sessiz",
+        "enable_sound_tooltip": "Sesi Etkinleştir",
+        "settings": "Ayarlar",
+        "deny": "REDDET",
+        "allow_once": "BİR KEZ İZİN VER",
+        "always": "HER ZAMAN",
+        "type_answer": "Cevabınızı yazın...",
+        "skip": "ATLA",
+        "back": "GERİ",
+        "confirm": "ONAYLA",
+        "submit": "GÖNDER",
+        "open_path": "Aç",
+        "copy_session_id": "Oturum ID Kopyala",
+
+        // Session grouping
+        "status_running": "Çalışıyor",
+        "status_waiting": "Bekliyor",
+        "status_processing": "İşleniyor",
+        "status_idle": "Boşta",
+        "other": "Diğer",
+        "n_sessions": "oturum",
+        "scroll_for_more": "Daha fazla için kaydır",
+        "scroll_hidden": "aşağıda",
+        "lines": "satır",
     ]
 }
