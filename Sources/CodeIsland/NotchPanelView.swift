@@ -219,13 +219,14 @@ struct NotchPanelView: View {
                     // Completion card: mark entered on hover-in, block collapse until entered
                     if hovering {
                         appState.completionHasBeenEntered = true
-                    } else if appState.completionHasBeenEntered {
-                        // Mouse entered then left — allow collapse
+                    } else if appState.completionHasBeenEntered || appState.deferCollapseOnMouseLeave {
+                        // Mouse entered then left — allow collapse (immediate or deferred)
                         hoverTimer?.invalidate()
                         hoverTimer = nil
+                        appState.deferCollapseOnMouseLeave = false
+                        appState.cancelCompletionQueue()
                         withAnimation(NotchAnimation.close) {
                             appState.surface = .collapsed
-                            appState.cancelCompletionQueue()
                         }
                     }
                     return
