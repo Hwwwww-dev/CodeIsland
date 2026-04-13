@@ -1680,6 +1680,10 @@ final class AppState {
         guard !watchRoots.isEmpty else { return }
 
         var context = FSEventStreamContext()
+        // passUnretained is safe here: the stream is dispatched on .main (same as
+        // @MainActor), so callbacks cannot interleave with deinit. Both
+        // stopSessionDiscovery() and deinit stop/invalidate the stream synchronously
+        // on the main thread before self is deallocated.
         context.info = Unmanaged.passUnretained(self).toOpaque()
 
         let stream = FSEventStreamCreate(
@@ -1687,7 +1691,6 @@ final class AppState {
             { (_, info, _, _, _, _) in
                 guard let info = info else { return }
                 let appState = Unmanaged<AppState>.fromOpaque(info).takeUnretainedValue()
-                // Debounce: re-scan known session stores on filesystem change.
                 appState.handleProjectsDirChange()
             },
             &context,
