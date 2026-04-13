@@ -1444,6 +1444,7 @@ private struct SessionListView: View {
                 ("stepfun", "StepFun"),
                 ("workbuddy", "WorkBuddy"),
                 ("hermes", "Hermes"),
+                ("qwen", "Qwen Code"),
                 ("opencode", "OpenCode"),
             ]
             var result: [(String, String?, [String])] = []
@@ -2170,18 +2171,19 @@ private let cliIconFiles: [String: String] = [
     "claude": "claude",
     "codex": "codex",
     "gemini": "gemini",
-    "antigravity": "claude",
+    "antigravity": "antigravity",
     "cursor": "cursor",
-    "trae": "cursor",
-    "traecn": "cursor",
+    "trae": "trae",
+    "traecn": "trae",
     "copilot": "copilot",
     "qoder": "qoder",
     "droid": "factory",
     "codebuddy": "codebuddy",
     "codybuddycn": "codebuddy",
-    "stepfun": "claude",
-    "workbuddy": "claude",
-    "hermes": "claude",
+    "stepfun": "stepfun",
+    "workbuddy": "workbuddy",
+    "hermes": "hermes",
+    "qwen": "qwen",
     "opencode": "opencode",
 ]
 

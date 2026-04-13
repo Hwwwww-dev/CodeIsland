@@ -236,6 +236,26 @@ struct ConfigInstaller {
             format: .claude,
             events: defaultEvents(for: .claude)
         ),
+        // Qwen Code — timeout in milliseconds
+        CLIConfig(
+            name: "Qwen Code", source: "qwen",
+            configPath: ".qwen/settings.json", configKey: "hooks",
+            format: .claude,
+            events: [
+                ("UserPromptSubmit", 5000, true),
+                ("PreToolUse", 5000, false),
+                ("PostToolUse", 5000, true),
+                ("PostToolUseFailure", 5000, true),
+                ("PermissionRequest", 86400000, false),
+                ("Stop", 5000, true),
+                ("SubagentStart", 5000, true),
+                ("SubagentStop", 5000, true),
+                ("SessionStart", 5000, false),
+                ("SessionEnd", 5000, true),
+                ("Notification", 86400000, false),
+                ("PreCompact", 5000, true),
+            ]
+        ),
         // GitHub Copilot CLI
         CLIConfig(
             name: "Copilot", source: "copilot",
