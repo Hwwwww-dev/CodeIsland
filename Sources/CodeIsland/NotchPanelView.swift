@@ -158,8 +158,11 @@ struct NotchPanelView: View {
                         SessionListView(appState: appState, onlySessionId: appState.justCompletedSessionId)
                             .transition(.blurFade.combined(with: .move(edge: .top)))
                     case .sessionList:
-                        SessionListView(appState: appState, onlySessionId: nil)
-                            .transition(.blurFade.combined(with: .move(edge: .top)))
+                        VStack(spacing: 0) {
+                            UsageBarView()
+                            SessionListView(appState: appState, onlySessionId: nil)
+                        }
+                        .transition(.blurFade.combined(with: .move(edge: .top)))
                     case .collapsed:
                         EmptyView()
                     }
