@@ -384,7 +384,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         lastCustomNotchHeight = SettingsManager.shared.customNotchHeight
         let observer = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
-            object: nil,
+            object: UserDefaults.standard,
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
@@ -392,19 +392,26 @@ class PanelWindowController: NSObject, NSWindowDelegate {
                 let newChoice = SettingsManager.shared.displayChoice
                 let newHeightMode = SettingsManager.shared.notchHeightMode.rawValue
                 let newCustomHeight = SettingsManager.shared.customNotchHeight
-                if newChoice != self.lastDisplayChoice {
-                    self.lastDisplayChoice = newChoice
+
+                let displayChanged = newChoice != self.lastDisplayChoice
+                let notchHeightChanged = newHeightMode != self.lastNotchHeightMode
+                    || abs(newCustomHeight - self.lastCustomNotchHeight) > 0.001
+
+                if displayChanged {
                     self.refreshCurrentScreen(forceRebuild: true)
                     self.configureAutoScreenPolling()
-                } else if newHeightMode != self.lastNotchHeightMode
-                    || abs(newCustomHeight - self.lastCustomNotchHeight) > 0.001 {
-                    self.lastNotchHeightMode = newHeightMode
-                    self.lastCustomNotchHeight = newCustomHeight
+                } else if notchHeightChanged {
                     self.refreshCurrentScreen(forceRebuild: true)
                 } else {
                     self.updateVisibility()
                     self.updatePosition()
                 }
+
+                // Always sync snapshots — previously only the display branch updated lastDisplayChoice,
+                // leaving lastNotch* stale and breaking later notch-height / 灵动岛 appearance updates.
+                self.lastDisplayChoice = newChoice
+                self.lastNotchHeightMode = newHeightMode
+                self.lastCustomNotchHeight = newCustomHeight
             }
         }
         settingsObservers.append(observer)

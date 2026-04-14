@@ -46,9 +46,8 @@ struct NotchPanelView: View {
     /// Minimum wing width needed to display compact bar content
     private var compactWingWidth: CGFloat { mascotSize + 14 }
 
-    /// Effective notch width — applies user scale on non-notch screens (#56).
+    /// Effective notch / island width — user scale applies on all displays (刘海 + 外接非刘海).
     private var effectiveNotchW: CGFloat {
-        guard !hasNotch else { return notchW }
         let scale = CGFloat(max(collapsedWidthScale, 50)) / 100.0
         return notchW * scale
     }
@@ -61,7 +60,13 @@ struct NotchPanelView: View {
         // Idle collapsed: single width only. Inline actions move to `IdleIndicatorBar` once
         // expanded — never widen on hover first, or the +80 pre-step fights the expand spring (#52).
         if showIdleIndicator { return nw + compactWingWidth * 2 }
-        if !isActive { return hasNotch ? notchW - 20 : nw }
+        if !isActive {
+            if hasNotch {
+                let ratio = (notchW - 20) / max(notchW, 1)
+                return effectiveNotchW * ratio
+            }
+            return nw
+        }
         let wing = compactWingWidth
         let extra: CGFloat = appState.status == .idle ? 0 : 20
         // Reserve space for tool status — proportional to screen width
@@ -77,7 +82,7 @@ struct NotchPanelView: View {
                     HStack(spacing: 0) {
                         CompactLeftWing(appState: appState, expanded: shouldShowExpanded, mascotSize: mascotSize, hasNotch: hasNotch, showToolStatus: showToolStatus)
                         if hasNotch && !shouldShowExpanded {
-                            Spacer(minLength: notchW)
+                            Spacer(minLength: effectiveNotchW)
                         } else if !shouldShowExpanded && showToolStatus {
                             CompactToolStatus(appState: appState)
                             Spacer(minLength: 0)
@@ -91,7 +96,7 @@ struct NotchPanelView: View {
                     IdleIndicatorBar(
                         mascotSize: mascotSize,
                         compactWingWidth: compactWingWidth,
-                        notchW: notchW,
+                        notchW: effectiveNotchW,
                         notchHeight: notchHeight,
                         hasNotch: hasNotch,
                         hovered: idleHovered,
