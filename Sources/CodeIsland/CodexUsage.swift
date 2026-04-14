@@ -41,7 +41,7 @@ final class CodexUsageMonitor: ObservableObject {
     static let shared = CodexUsageMonitor()
 
     @Published private(set) var snapshot: CodexUsageSnapshot?
-    @Published private(set) var isLoading = false
+    private var isLoading = false
 
     private var refreshTimer: Timer?
 
@@ -49,7 +49,7 @@ final class CodexUsageMonitor: ObservableObject {
 
     func start() {
         guard refreshTimer == nil else { return }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
         }
         Task { await refresh() }
@@ -65,7 +65,9 @@ final class CodexUsageMonitor: ObservableObject {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
-        snapshot = try? CodexUsageLoader.load()
+        snapshot = await Task.detached(priority: .utility) {
+            (try? CodexUsageLoader.load()) ?? nil
+        }.value
     }
 }
 
@@ -140,24 +142,29 @@ enum CodexUsageLoader {
         guard payload["type"] as? String == "token_count",
               let rateLimits = payload["rate_limits"] as? [String: Any] else { return nil }
 
+        let capturedAt = timestamp(from: object["timestamp"]) ?? fallbackTimestamp
         let windows = ["primary", "secondary"].compactMap { key in
-            usageWindow(for: key, in: rateLimits)
+            usageWindow(for: key, in: rateLimits, anchor: capturedAt)
         }
         guard !windows.isEmpty else { return nil }
 
         return CodexUsageSnapshot(
             sourceFilePath: filePath,
-            capturedAt: timestamp(from: object["timestamp"]) ?? fallbackTimestamp,
+            capturedAt: capturedAt,
             planType: string(from: rateLimits["plan_type"]),
             limitID: string(from: rateLimits["limit_id"]),
             windows: windows
         )
     }
 
-    private static func usageWindow(for key: String, in rateLimits: [String: Any]) -> CodexUsageWindow? {
+    private static func usageWindow(for key: String, in rateLimits: [String: Any], anchor: Date) -> CodexUsageWindow? {
         guard let payload = rateLimits[key] as? [String: Any],
-              let usedPercentage = number(from: payload["used_percent"]),
+              let rawUsed = number(from: payload["used_percent"]),
               let windowMinutes = integer(from: payload["window_minutes"]) else { return nil }
+
+        let rawReset = date(from: payload["resets_at"])
+        let (resetsAt, expired) = resolveReset(raw: rawReset, anchor: anchor, windowMinutes: windowMinutes)
+        let usedPercentage = expired ? 0.0 : rawUsed
 
         return CodexUsageWindow(
             key: key,
@@ -165,8 +172,35 @@ enum CodexUsageLoader {
             usedPercentage: usedPercentage,
             leftPercentage: max(0, 100 - usedPercentage),
             windowMinutes: windowMinutes,
-            resetsAt: date(from: payload["resets_at"])
+            resetsAt: resetsAt
         )
+    }
+
+    /// Derive a plausible reset timestamp AND detect whether the window has rolled over.
+    /// Raw future value wins; otherwise roll anchor forward and mark expired so the caller
+    /// can reset `used_percent` to 0 — matches the observable reality after a quiet gap.
+    private static func resolveReset(raw: Date?, anchor: Date, windowMinutes: Int) -> (Date?, Bool) {
+        let now = Date()
+        let window = TimeInterval(windowMinutes) * 60
+        guard window > 0 else { return (raw, raw != nil) }
+
+        if let raw = raw {
+            if raw > now { return (raw, false) }
+            var next = raw
+            var guardCount = 0
+            while next <= now && guardCount < 100_000 {
+                next = next.addingTimeInterval(window)
+                guardCount += 1
+            }
+            return (next, true)
+        }
+
+        let elapsed = now.timeIntervalSince(anchor)
+        if elapsed <= 0 { return (anchor.addingTimeInterval(window), false) }
+        let steps = floor(elapsed / window) + 1
+        let candidate = anchor.addingTimeInterval(window * steps)
+        let expired = elapsed >= window
+        return (candidate, expired)
     }
 
     private static func windowLabel(forMinutes minutes: Int) -> String {
@@ -214,10 +248,14 @@ enum CodexUsageLoader {
 
     private static func date(from value: Any?) -> Date? {
         switch value {
-        case let number as NSNumber: return Date(timeIntervalSince1970: number.doubleValue)
+        case let number as NSNumber:
+            var sec = number.doubleValue
+            if sec > 10_000_000_000 { sec /= 1000 }
+            return Date(timeIntervalSince1970: sec)
         case let string as String:
-            guard let seconds = Double(string) else { return nil }
-            return Date(timeIntervalSince1970: seconds)
+            guard var sec = Double(string) else { return nil }
+            if sec > 10_000_000_000 { sec /= 1000 }
+            return Date(timeIntervalSince1970: sec)
         default: return nil
         }
     }

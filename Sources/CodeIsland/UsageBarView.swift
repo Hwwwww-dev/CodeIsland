@@ -63,7 +63,9 @@ private struct CodexUsageChip: View {
 
     private var displayText: String {
         snapshot.windows.prefix(2).map { w in
-            "\(w.label) \(w.roundedUsedPercentage)%"
+            let remaining = formatRemaining(w.resetsAt)
+            let suffix = remaining.isEmpty ? "" : " \(remaining)"
+            return "\(w.label) \(w.roundedUsedPercentage)%\(suffix)"
         }.joined(separator: " | ")
     }
 
@@ -81,9 +83,37 @@ private struct CodexUsageChip: View {
         var lines: [String] = []
         if let plan = snapshot.planType { lines.append("Plan: \(plan)") }
         for w in snapshot.windows {
-            lines.append("\(w.label): \(w.roundedUsedPercentage)%")
+            let reset = formatRemainingLong(w.resetsAt)
+            let suffix = reset.isEmpty ? "" : " (resets in \(reset))"
+            lines.append("\(w.label): \(w.roundedUsedPercentage)%\(suffix)")
         }
         return lines.isEmpty ? "Codex usage" : lines.joined(separator: "\n")
+    }
+
+    private func formatRemaining(_ date: Date?) -> String {
+        guard let date = date else { return "" }
+        let remaining = date.timeIntervalSinceNow
+        if remaining <= 0 { return "" }
+        if remaining < 3600 { return "\(Int(remaining / 60))m" }
+        if remaining < 86400 {
+            let h = Int(remaining / 3600)
+            let m = Int(remaining.truncatingRemainder(dividingBy: 3600) / 60)
+            return m > 0 ? "\(h)h\(m)m" : "\(h)h"
+        }
+        return "\(Int(remaining / 86400))d"
+    }
+
+    private func formatRemainingLong(_ date: Date?) -> String {
+        guard let date = date else { return "" }
+        let remaining = date.timeIntervalSinceNow
+        if remaining <= 0 { return "" }
+        if remaining < 3600 { return "\(Int(remaining / 60))min" }
+        if remaining < 86400 {
+            let h = Int(remaining / 3600)
+            let m = Int(remaining.truncatingRemainder(dividingBy: 3600) / 60)
+            return m > 0 ? "\(h)h\(m)m" : "\(h)h"
+        }
+        return "\(Int(remaining / 86400))d"
     }
 
     var body: some View {

@@ -37,7 +37,7 @@ struct NotchPanelView: View {
         isActive && !(hideWhenNoSession && appState.activeSessionCount == 0)
     }
     private var shouldShowExpanded: Bool {
-        showBar && appState.surface.isExpanded
+        (showBar || showIdleIndicator) && appState.surface.isExpanded
     }
 
     /// Mascot size — fits within the menu bar height
@@ -57,9 +57,11 @@ struct NotchPanelView: View {
     private var panelWidth: CGFloat {
         let nw = effectiveNotchW
         let maxWidth = min(620, screenWidth - 40)
-        if showIdleIndicator { return idleHovered ? nw + compactWingWidth * 2 + 80 : nw + compactWingWidth * 2 }
-        if !isActive { return hasNotch ? notchW - 20 : nw }
         if shouldShowExpanded { return min(max(nw + 200, 580), maxWidth) }
+        // Idle collapsed: single width only. Inline actions move to `IdleIndicatorBar` once
+        // expanded — never widen on hover first, or the +80 pre-step fights the expand spring (#52).
+        if showIdleIndicator { return nw + compactWingWidth * 2 }
+        if !isActive { return hasNotch ? notchW - 20 : nw }
         let wing = compactWingWidth
         let extra: CGFloat = appState.status == .idle ? 0 : 20
         // Reserve space for tool status — proportional to screen width
@@ -92,7 +94,8 @@ struct NotchPanelView: View {
                         notchW: notchW,
                         notchHeight: notchHeight,
                         hasNotch: hasNotch,
-                        hovered: idleHovered
+                        hovered: idleHovered,
+                        showInlineActions: shouldShowExpanded
                     )
                 } else {
                     // Idle: just the notch shell
@@ -156,13 +159,15 @@ struct NotchPanelView: View {
                         }
                     case .completionCard:
                         SessionListView(appState: appState, onlySessionId: appState.justCompletedSessionId)
-                            .transition(.blurFade.combined(with: .move(edge: .top)))
+                            .transition(.opacity)
                     case .sessionList:
                         VStack(spacing: 0) {
                             UsageBarView()
-                            SessionListView(appState: appState, onlySessionId: nil)
+                            if !appState.sessions.isEmpty {
+                                SessionListView(appState: appState, onlySessionId: nil)
+                            }
                         }
-                        .transition(.blurFade.combined(with: .move(edge: .top)))
+                        .transition(.opacity)
                     case .collapsed:
                         EmptyView()
                     }
@@ -201,18 +206,30 @@ struct NotchPanelView: View {
             .onAppear { displayedToolStatus = showToolStatus }
             .contentShape(Rectangle())
             .onHover { hovering in
-                // Idle indicator hover — delay un-hover to prevent oscillation when
-                // the animated width change crosses the mouse position (#52).
+                // Idle indicator hover — track local idleHovered for compact width AND drive
+                // surface expansion so usage data still surfaces when dormant.
                 if showIdleIndicator {
+                    hoverTimer?.invalidate()
+                    hoverTimer = nil
+                    isHovered = hovering
                     if hovering {
-                        hoverTimer?.invalidate()
-                        hoverTimer = nil
-                        withAnimation(NotchAnimation.micro) { idleHovered = true }
+                        idleHovered = true
+                        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
+                            Task { @MainActor in
+                                guard isHovered else { return }
+                                withAnimation(NotchAnimation.open) {
+                                    appState.surface = .sessionList
+                                }
+                            }
+                        }
                     } else {
-                        hoverTimer?.invalidate()
                         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
                             Task { @MainActor in
-                                withAnimation(NotchAnimation.micro) { idleHovered = false }
+                                guard !isHovered else { return }
+                                withAnimation(NotchAnimation.close) {
+                                    idleHovered = false
+                                    appState.surface = .collapsed
+                                }
                             }
                         }
                     }
@@ -252,7 +269,7 @@ struct NotchPanelView: View {
                 if hovering {
                     // Delay expansion to avoid accidental triggers
                     hoverTimer?.invalidate()
-                    hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+                    hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
                         Task { @MainActor in
                             // Guard: mouse may have left during the delay
                             guard isHovered else { return }
@@ -326,48 +343,54 @@ private struct CompactLeftWing: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if expanded {
-                AppLogoView(size: 36, showBackground: false)
-                if appState.sessions.count > 1 {
-                    HStack(spacing: 1) {
-                        ForEach([("all", "ALL"), ("status", "STA"), ("cli", "CLI")], id: \.0) { tag, label in
-                            let selected = groupingMode == tag
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.15)) { groupingMode = tag }
-                            } label: {
-                                PixelText(
-                                    text: label,
-                                    color: selected ? Color(red: 0.3, green: 0.85, blue: 0.4) : .white.opacity(0.3),
-                                    pixelSize: 1.3
-                                )
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 4)
-                                .background(
-                                    Rectangle().fill(selected ? .white.opacity(0.1) : .clear)
-                                )
+            Group {
+                if expanded {
+                    AppLogoView(size: 36, showBackground: false)
+                    if appState.sessions.count > 1 {
+                        HStack(spacing: 1) {
+                            ForEach([("all", "ALL"), ("status", "STA"), ("cli", "CLI")], id: \.0) { tag, label in
+                                let selected = groupingMode == tag
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.15)) { groupingMode = tag }
+                                } label: {
+                                    PixelText(
+                                        text: label,
+                                        color: selected ? Color(red: 0.3, green: 0.85, blue: 0.4) : .white.opacity(0.3),
+                                        pixelSize: 1.3
+                                    )
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        Rectangle().fill(selected ? .white.opacity(0.1) : .clear)
+                                    )
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .background(Rectangle().fill(.white.opacity(0.05)))
+                        .overlay(Rectangle().stroke(.white.opacity(0.1), lineWidth: 1))
                     }
-                    .background(Rectangle().fill(.white.opacity(0.05)))
-                    .overlay(Rectangle().stroke(.white.opacity(0.1), lineWidth: 1))
-                }
-            } else {
-                MascotView(source: displaySource, status: displayStatus, size: mascotSize)
-                    .id(displaySource)
-                    .transition(.opacity)
-                    .animation(.easeInOut(duration: 0.3), value: displaySource)
+                } else {
+                    MascotView(source: displaySource, status: displayStatus, size: mascotSize)
+                        .id(displaySource)
+                        .animation(.easeInOut(duration: 0.3), value: displaySource)
 
-                // On notch screens, show tool name only (no description, space is tight)
-                if hasNotch, showToolStatus, let tool = shownTool {
-                    Text(tool)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(toolStatusColor(tool))
-                        .lineLimit(1)
-                        .fixedSize()
-                        .transition(.opacity)
+                    // On notch screens, show tool name only (no description, space is tight)
+                    if hasNotch, showToolStatus, let tool = shownTool {
+                        Text(tool)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(toolStatusColor(tool))
+                            .lineLimit(1)
+                            .fixedSize()
+                            .transition(.opacity)
+                    }
                 }
             }
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .leading)),
+                removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .leading))
+            ))
+            .animation(NotchAnimation.open, value: expanded)
         }
         .padding(.leading, 6)
         .clipped()
@@ -411,17 +434,24 @@ private struct CompactRightWing: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if expanded {
-                NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
-                    soundEnabled.toggle()
-                }
-                NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
-                    SettingsWindowController.shared.show()
-                }
-                NotchIconButton(icon: "power", tint: Color(red: 1.0, green: 0.4, blue: 0.4), tooltip: l10n["quit"]) {
-                    NSApplication.shared.terminate(nil)
-                }
-            } else {
+            Group {
+                if expanded {
+                    HStack(spacing: 6) {
+                        NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
+                            soundEnabled.toggle()
+                        }
+                        NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
+                            SettingsWindowController.shared.show()
+                        }
+                        NotchIconButton(icon: "power", tint: Color(red: 1.0, green: 0.4, blue: 0.4), tooltip: l10n["quit"]) {
+                            NSApplication.shared.terminate(nil)
+                        }
+                    }
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.9, anchor: .trailing)),
+                        removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .trailing))
+                    ))
+                } else {
                 // Pending approval/question badge
                 if appState.status == .waitingApproval || appState.status == .waitingQuestion {
                     Image(systemName: "bell.fill")
@@ -461,7 +491,9 @@ private struct CompactRightWing: View {
                     }
                     .font(.system(size: 13, weight: .bold, design: .monospaced))
                 }
+                }
             }
+            .animation(NotchAnimation.open, value: expanded)
         }
         .padding(.trailing, 6)
     }
@@ -590,21 +622,24 @@ private struct NotchIconButton: View {
     let action: () -> Void
     @State private var hovering = false
 
+    private static let hoverSpring = Animation.spring(response: 0.32, dampingFraction: 0.78)
+
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(tint.opacity(hovering ? 1.0 : 0.85))
+                .foregroundStyle(tint.opacity(hovering ? 1.0 : 0.82))
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: 22, height: 22)
                 .background(
                     Circle()
-                        .fill(tint.opacity(hovering ? 0.2 : 0.08))
+                        .fill(tint.opacity(hovering ? 0.22 : 0.07))
                 )
-                .scaleEffect(hovering ? 1.1 : 1.0)
+                .scaleEffect(hovering ? 1.06 : 1.0)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .onHover { h in withAnimation(NotchAnimation.micro) { hovering = h } }
+        .onHover { h in withAnimation(Self.hoverSpring) { hovering = h } }
         .help(tooltip ?? "")
     }
 }
@@ -618,6 +653,8 @@ private struct IdleIndicatorBar: View {
     let notchHeight: CGFloat
     let hasNotch: Bool
     let hovered: Bool
+    /// Right-side controls need width; only show once panel is expanded so collapsed hover stays a single-width spring.
+    let showInlineActions: Bool
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
 
@@ -629,11 +666,12 @@ private struct IdleIndicatorBar: View {
                     .opacity(hovered ? 0.9 : 0.5)
             }
             .padding(.leading, 6)
+            .animation(NotchAnimation.micro, value: hovered)
 
             Spacer(minLength: hasNotch ? notchW : 0)
 
-            // Right: expanded shows text + buttons, collapsed shows nothing
-            if hovered {
+            // Right: actions only when panel is already expanded (wide enough); collapsed hover = mascot only
+            if hovered && showInlineActions {
                 HStack(spacing: 8) {
                     Text("0")
                         .font(.system(size: 13, weight: .bold, design: .monospaced))
@@ -652,11 +690,14 @@ private struct IdleIndicatorBar: View {
                     }
                 }
                 .padding(.trailing, 6)
-                .transition(.opacity)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.88, anchor: .trailing)),
+                    removal: .opacity.combined(with: .scale(scale: 0.92, anchor: .trailing))
+                ))
+                .animation(NotchAnimation.open, value: showInlineActions)
             }
         }
         .frame(height: notchHeight)
-        .animation(NotchAnimation.micro, value: hovered)
     }
 }
 
@@ -929,10 +970,8 @@ private struct QuestionBar: View {
             // Session context
             if sessionSource != nil || sessionContext != nil {
                 HStack(spacing: 5) {
-                    if let src = sessionSource, let icon = cliIcon(source: src, size: 12) {
-                        Image(nsImage: icon)
-                            .resizable()
-                            .frame(width: 12, height: 12)
+                    if let src = sessionSource {
+                        CLISourceIcon(source: src, size: 12)
                     }
                     if let cwd = sessionContext {
                         Image(systemName: "folder.fill")
@@ -1497,10 +1536,8 @@ private struct SessionListView: View {
             ForEach(groups, id: \.header) { group in
                 if !group.header.isEmpty {
                     HStack(spacing: 6) {
-                        if let src = group.source, let icon = cliIcon(source: src) {
-                            Image(nsImage: icon)
-                                .resizable()
-                                .frame(width: 14, height: 14)
+                        if let src = group.source {
+                            CLISourceIcon(source: src, size: 14)
                         }
                         Text(group.header)
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
@@ -2185,6 +2222,33 @@ private struct Line: Shape {
 }
 
 // MARK: - Shared Helpers
+
+/// PNG CLI icons in list headers: spring fade + scale on appear instead of an instant pop.
+private struct CLISourceIcon: View {
+    let source: String
+    var size: CGFloat = 14
+    @State private var revealed = false
+
+    var body: some View {
+        Group {
+            if let img = cliIcon(source: source, size: size) {
+                Image(nsImage: img)
+                    .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
+                    .frame(width: size, height: size)
+                    .scaleEffect(revealed ? 1 : 0.82)
+                    .opacity(revealed ? 1 : 0)
+            }
+        }
+        .id(source)
+        .onAppear {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                revealed = true
+            }
+        }
+    }
+}
 
 private let cliIconFiles: [String: String] = [
     "claude": "claude",

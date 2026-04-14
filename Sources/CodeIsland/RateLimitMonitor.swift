@@ -86,7 +86,7 @@ final class RateLimitMonitor: ObservableObject {
     static let shared = RateLimitMonitor()
 
     @Published private(set) var rateLimitInfo: RateLimitDisplayInfo?
-    @Published private(set) var isLoading = false
+    private var isLoading = false
 
     private var refreshTimer: Timer?
     private(set) var isRunning = false
@@ -97,7 +97,7 @@ final class RateLimitMonitor: ObservableObject {
     func start() {
         guard !isRunning else { return }
         isRunning = true
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in await self?.refresh() }
         }
         Task { await refresh() }
@@ -115,11 +115,18 @@ final class RateLimitMonitor: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        if let info = PulseUsageReader.read() {
+        let info = await Task.detached(priority: .utility) {
+            PulseUsageReader.read()
+        }.value
+
+        if let info {
             rateLimitInfo = info
             return
         }
-        if !PulseUsageReader.cacheFileExists {
+        let exists = await Task.detached(priority: .utility) {
+            PulseUsageReader.cacheFileExists
+        }.value
+        if !exists {
             rateLimitInfo = nil
         }
     }
@@ -147,8 +154,8 @@ enum PulseUsageReader {
         NSHomeDirectory() + "/.pulse/.cache/general.json"
     }
 
-    /// Max cache age trusted. Older than 15 min is considered stale.
-    static let freshnessWindow: TimeInterval = 15 * 60
+    static let fiveHourSeconds: TimeInterval = 5 * 3600
+    static let sevenDaySeconds: TimeInterval = 7 * 86400
 
     static var cacheFileExists: Bool {
         FileManager.default.fileExists(atPath: defaultCachePath)
@@ -165,30 +172,43 @@ enum PulseUsageReader {
         }
 
         let now = Date()
-        if let updatedAtMs = readDouble(json["updated_at"]) {
-            let updatedAt = Date(timeIntervalSince1970: updatedAtMs / 1000.0)
-            if now.timeIntervalSince(updatedAt) > freshnessWindow { return nil }
+        // Resolve the "last activity" anchor: prefer payload updated_at, fall back to file mtime.
+        var updatedAt: Date?
+        if let ms = readDouble(json["updated_at"]) {
+            updatedAt = Date(timeIntervalSince1970: ms / 1000.0)
         } else if let attrs = try? fm.attributesOfItem(atPath: path),
-                  let mtime = attrs[.modificationDate] as? Date,
-                  now.timeIntervalSince(mtime) > freshnessWindow {
-            return nil
+                  let mtime = attrs[.modificationDate] as? Date {
+            updatedAt = mtime
         }
 
         let rateLimits = json["rate_limits"] as? [String: Any] ?? [:]
         let fiveHour = rateLimits["five_hour"] as? [String: Any]
         let sevenDay = rateLimits["seven_day"] as? [String: Any]
 
-        let fiveHourPct: Int? = readPercent(fiveHour?["used_percentage"])
-        let sevenDayPct: Int? = readPercent(sevenDay?["used_percentage"])
+        let rawFivePct: Int? = readPercent(fiveHour?["used_percentage"])
+        let rawSevenPct: Int? = readPercent(sevenDay?["used_percentage"])
 
-        guard fiveHourPct != nil || sevenDayPct != nil else { return nil }
+        guard rawFivePct != nil || rawSevenPct != nil else { return nil }
 
-        let fiveHourReset = readEpochSeconds(fiveHour?["resets_at"])
-        let sevenDayReset = readEpochSeconds(sevenDay?["resets_at"])
+        // Reset-time inference: if Pulse's recorded resets_at is missing or already past,
+        // derive it from the last activity anchor + the nominal window length. When the
+        // window has actually rolled over since the cache was written, percent resets to 0.
+        let (fiveHourReset, fiveExpired) = resolveReset(
+            raw: readEpochInstant(fiveHour?["resets_at"]),
+            anchor: updatedAt,
+            window: fiveHourSeconds,
+            now: now
+        )
+        let (sevenDayReset, sevenExpired) = resolveReset(
+            raw: readEpochInstant(sevenDay?["resets_at"]),
+            anchor: updatedAt,
+            window: sevenDaySeconds,
+            now: now
+        )
 
         return RateLimitDisplayInfo(
-            fiveHourPercent: fiveHourPct,
-            sevenDayPercent: sevenDayPct,
+            fiveHourPercent: fiveExpired ? (rawFivePct != nil ? 0 : nil) : rawFivePct,
+            sevenDayPercent: sevenExpired ? (rawSevenPct != nil ? 0 : nil) : rawSevenPct,
             fiveHourResetAt: fiveHourReset,
             sevenDayResetAt: sevenDayReset,
             planName: nil
@@ -209,8 +229,35 @@ enum PulseUsageReader {
         return nil
     }
 
-    private static func readEpochSeconds(_ value: Any?) -> Date? {
-        guard let seconds = readDouble(value), seconds > 0 else { return nil }
-        return Date(timeIntervalSince1970: seconds)
+    /// Epoch from JSON: supports seconds or milliseconds (values above ~year 2001 in "seconds" are treated as ms).
+    private static func readEpochInstant(_ value: Any?) -> Date? {
+        guard var sec = readDouble(value), sec > 0 else { return nil }
+        if sec > 10_000_000_000 { sec /= 1000 }
+        return Date(timeIntervalSince1970: sec)
+    }
+
+    /// Pick the freshest plausible reset time and report whether the window has rolled over.
+    ///
+    /// When `resets_at` is present but already in the past, advance along the window from **that**
+    /// instant — not from `updated_at`. Pulse updates `updated_at` on every cache write; anchoring
+    /// to it shifts the predicted "next reset" to ~5h after the last file refresh (typical ~30m skew).
+    private static func resolveReset(raw: Date?, anchor: Date?, window: TimeInterval, now: Date) -> (Date?, Bool) {
+        if let raw = raw {
+            if raw > now { return (raw, false) }
+            var next = raw
+            var guardCount = 0
+            while next <= now && guardCount < 100_000 {
+                next = next.addingTimeInterval(window)
+                guardCount += 1
+            }
+            return (next, true)
+        }
+        guard let anchor = anchor else { return (nil, false) }
+        let elapsed = now.timeIntervalSince(anchor)
+        if elapsed <= 0 { return (anchor.addingTimeInterval(window), false) }
+        let steps = floor(elapsed / window) + 1
+        let candidate = anchor.addingTimeInterval(window * steps)
+        let expired = elapsed >= window
+        return (candidate, expired)
     }
 }
