@@ -662,47 +662,78 @@ private struct IdleIndicatorBar: View {
     let showInlineActions: Bool
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
+    @State private var actionProgress: CGFloat = 0
+    @State private var hoverProgress: CGFloat = 0
+
+    /// Keep the trailing controls pinned to the island edge while the shell morphs,
+    /// instead of removing them from layout before the width spring finishes.
+    private var actionWingWidth: CGFloat {
+        compactWingWidth + 104 * actionProgress
+    }
+
+    private var mascotWingWidth: CGFloat {
+        compactWingWidth + 18 * actionProgress
+    }
+
+    private var mascotEmphasis: CGFloat {
+        max(actionProgress, hoverProgress)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             // Left: mascot
             HStack(spacing: 6) {
                 MascotView(source: "claude", status: .idle, size: mascotSize)
-                    .opacity(hovered ? 0.9 : 0.5)
+                    .opacity(0.5 + mascotEmphasis * 0.4)
+                    .scaleEffect(1 + actionProgress * 0.03, anchor: .leading)
             }
             .padding(.leading, 6)
-            .animation(NotchAnimation.micro, value: hovered)
+            .frame(width: mascotWingWidth, alignment: .leading)
 
             Spacer(minLength: hasNotch ? notchW : 0)
 
-            // Right: actions only when panel is already expanded (wide enough); collapsed hover = mascot only
-            if hovered && showInlineActions {
-                HStack(spacing: 8) {
-                    Text("0")
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.4))
+            // Right: keep a trailing slot alive during collapse so controls retract with
+            // the same spring as the shell instead of snapping back first.
+            HStack(spacing: 8) {
+                Text("0")
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.4))
 
-                    HStack(spacing: 4) {
-                        NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
-                            soundEnabled.toggle()
-                        }
-                        NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
-                            SettingsWindowController.shared.show()
-                        }
-                        NotchIconButton(icon: "power", tint: Color(red: 1.0, green: 0.4, blue: 0.4), tooltip: l10n["quit"]) {
-                            NSApplication.shared.terminate(nil)
-                        }
+                HStack(spacing: 4) {
+                    NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
+                        soundEnabled.toggle()
+                    }
+                    NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
+                        SettingsWindowController.shared.show()
+                    }
+                    NotchIconButton(icon: "power", tint: Color(red: 1.0, green: 0.4, blue: 0.4), tooltip: l10n["quit"]) {
+                        NSApplication.shared.terminate(nil)
                     }
                 }
-                .padding(.trailing, 6)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.88, anchor: .trailing)),
-                    removal: .opacity.combined(with: .scale(scale: 0.92, anchor: .trailing))
-                ))
-                .animation(NotchAnimation.open, value: showInlineActions)
             }
+            .padding(.trailing, 6)
+            .frame(width: actionWingWidth, alignment: .trailing)
+            .clipped()
+            .opacity(actionProgress)
+            .scaleEffect(0.9 + actionProgress * 0.1, anchor: .trailing)
+            .offset(x: (1 - actionProgress) * 12)
+            .allowsHitTesting(actionProgress > 0.98)
         }
         .frame(height: notchHeight)
+        .onAppear {
+            actionProgress = showInlineActions ? 1 : 0
+            hoverProgress = hovered ? 1 : 0
+        }
+        .onChange(of: hovered) { _, newValue in
+            withAnimation(NotchAnimation.micro) {
+                hoverProgress = newValue ? 1 : 0
+            }
+        }
+        .onChange(of: showInlineActions) { _, newValue in
+            withAnimation(newValue ? NotchAnimation.open : NotchAnimation.close) {
+                actionProgress = newValue ? 1 : 0
+            }
+        }
     }
 }
 
