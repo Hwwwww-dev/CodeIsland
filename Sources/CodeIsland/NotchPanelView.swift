@@ -1461,6 +1461,7 @@ private struct SessionListView: View {
                 ("workbuddy", "WorkBuddy"),
                 ("hermes", "Hermes"),
                 ("qwen", "Qwen Code"),
+                ("kimi", "Kimi Code CLI"),
                 ("opencode", "OpenCode"),
             ]
             var result: [(String, String?, [String])] = []
@@ -2298,6 +2299,7 @@ private let cliIconFiles: [String: String] = [
     "workbuddy": "workbuddy",
     "hermes": "hermes",
     "qwen": "qwen",
+    "kimi": "kimi",
     "opencode": "opencode",
 ]
 
