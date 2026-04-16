@@ -351,6 +351,8 @@ private struct IntrinsicWidthReader: View {
 
 /// Left side: pixel character + status info
 private struct CompactLeftWing: View {
+    private static let leadingInset: CGFloat = 6
+
     var appState: AppState
     let expanded: Bool
     let mascotSize: CGFloat
@@ -388,8 +390,8 @@ private struct CompactLeftWing: View {
     }
 
     private var frameWidth: CGFloat {
-        let from = max(collapsedWidth, mascotSize + 12)
-        let to = max(expandedWidth, 42)
+        let from = max(collapsedWidth + Self.leadingInset, mascotSize + 18)
+        let to = max(expandedWidth + Self.leadingInset, 48)
         return from + (to - from) * widthProgress
     }
 
@@ -493,9 +495,8 @@ private struct CompactLeftWing: View {
                 .blur(radius: (1 - expandedRevealProgress) * 1.3)
                 .allowsHitTesting(expandedRevealProgress > 0.96)
         }
-        .padding(.leading, 6)
+        .padding(.leading, Self.leadingInset)
         .frame(width: frameWidth, alignment: .leading)
-        .clipped()
         .onAppear {
             morphProgress = expanded ? 1 : 0
         }
@@ -525,6 +526,8 @@ private struct CompactLeftWing: View {
 
 /// Right side: project name + session count (detailed) or just count (simple)
 private struct CompactRightWing: View {
+    private static let trailingInset: CGFloat = 6
+
     var appState: AppState
     let expanded: Bool
     let hasNotch: Bool
@@ -559,8 +562,8 @@ private struct CompactRightWing: View {
     }
 
     private var frameWidth: CGFloat {
-        let from = max(collapsedWidth, 24)
-        let to = max(expandedWidth, 76)
+        let from = max(collapsedWidth + Self.trailingInset, 30)
+        let to = max(expandedWidth + Self.trailingInset, 84)
         return from + (to - from) * widthProgress
     }
 
@@ -672,9 +675,8 @@ private struct CompactRightWing: View {
                 .blur(radius: (1 - expandedRevealProgress) * 1.2)
                 .allowsHitTesting(expandedRevealProgress > 0.96)
         }
-        .padding(.trailing, 6)
+        .padding(.trailing, Self.trailingInset)
         .frame(width: frameWidth, alignment: .trailing)
-        .clipped()
         .onAppear {
             morphProgress = expanded ? 1 : 0
         }
