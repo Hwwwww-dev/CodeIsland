@@ -100,7 +100,10 @@ private struct CodexUsageChip: View {
             let m = Int(remaining.truncatingRemainder(dividingBy: 3600) / 60)
             return m > 0 ? "\(h)h\(m)m" : "\(h)h"
         }
-        return "\(Int(remaining / 86400))d"
+        let d = Int(remaining / 86400)
+        let h = Int(remaining.truncatingRemainder(dividingBy: 86400) / 3600)
+        let m = Int(remaining.truncatingRemainder(dividingBy: 3600) / 60)
+        return h > 0 ? "\(d)d\(h)h\(m)m" : "\(d)d\(m)m"
     }
 
     private func formatRemainingLong(_ date: Date?) -> String {
@@ -113,7 +116,10 @@ private struct CodexUsageChip: View {
             let m = Int(remaining.truncatingRemainder(dividingBy: 3600) / 60)
             return m > 0 ? "\(h)h\(m)m" : "\(h)h"
         }
-        return "\(Int(remaining / 86400))d"
+        let d = Int(remaining / 86400)
+        let h = Int(remaining.truncatingRemainder(dividingBy: 86400) / 3600)
+        let m = Int(remaining.truncatingRemainder(dividingBy: 3600) / 60)
+        return h > 0 ? "\(d)d\(h)h\(m)m" : "\(d)d\(m)min"
     }
 
     var body: some View {
