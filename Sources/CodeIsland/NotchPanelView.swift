@@ -74,6 +74,13 @@ struct NotchPanelView: View {
         return nw + wing * 2 + extra + toolExtra
     }
 
+    private func refreshUsageMonitors() {
+        Task { @MainActor in
+            await RateLimitMonitor.shared.refresh()
+            await CodexUsageMonitor.shared.refresh()
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
@@ -219,6 +226,7 @@ struct NotchPanelView: View {
                     isHovered = hovering
                     if hovering {
                         idleHovered = true
+                        refreshUsageMonitors()
                         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
                             Task { @MainActor in
                                 guard isHovered else { return }
@@ -272,6 +280,7 @@ struct NotchPanelView: View {
 
                 isHovered = hovering
                 if hovering {
+                    refreshUsageMonitors()
                     // Delay expansion to avoid accidental triggers
                     hoverTimer?.invalidate()
                     hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
@@ -326,6 +335,20 @@ struct NotchPanelView: View {
 
 // MARK: - Compact Wings (notch-level, 32px height)
 
+private struct IntrinsicWidthReader: View {
+    let onChange: (CGFloat) -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear { onChange(proxy.size.width) }
+                .onChange(of: proxy.size.width) { _, newValue in
+                    onChange(newValue)
+                }
+        }
+    }
+}
+
 /// Left side: pixel character + status info
 private struct CompactLeftWing: View {
     var appState: AppState
@@ -345,60 +368,140 @@ private struct CompactLeftWing: View {
     private var liveTool: String? { displaySession?.currentTool }
     @State private var shownTool: String?
     @State private var lingerTimer: Timer?
+    @State private var morphProgress: CGFloat = 0
+    @State private var collapsedWidth: CGFloat = 44
+    @State private var expandedWidth: CGFloat = 52
 
-    var body: some View {
+    private static let expandSpring = Animation.spring(response: 0.34, dampingFraction: 0.78)
+    private static let collapseSpring = Animation.spring(response: 0.3, dampingFraction: 0.86)
+
+    private var widthProgress: CGFloat {
+        stagedProgress(morphProgress, start: 0.04, end: 0.9)
+    }
+
+    private var collapsedFadeProgress: CGFloat {
+        stagedProgress(morphProgress, start: 0.16, end: 0.58)
+    }
+
+    private var expandedRevealProgress: CGFloat {
+        stagedProgress(morphProgress, start: 0.2, end: 0.92)
+    }
+
+    private var frameWidth: CGFloat {
+        let from = max(collapsedWidth, mascotSize + 12)
+        let to = max(expandedWidth, 42)
+        return from + (to - from) * widthProgress
+    }
+
+    private func stagedProgress(_ value: CGFloat, start: CGFloat, end: CGFloat) -> CGFloat {
+        guard end > start else { return value >= end ? 1 : 0 }
+        let normalized = min(max((value - start) / (end - start), 0), 1)
+        return normalized * normalized * (3 - 2 * normalized)
+    }
+
+    private func animateToExpandedState() {
+        withAnimation(expanded ? Self.expandSpring : Self.collapseSpring) {
+            morphProgress = expanded ? 1 : 0
+        }
+    }
+
+    @ViewBuilder
+    private var collapsedContent: some View {
         HStack(spacing: 6) {
-            Group {
-                if expanded {
-                    AppLogoView(size: 36, showBackground: false)
-                    if appState.sessions.count > 1 {
-                        HStack(spacing: 1) {
-                            ForEach([("all", "ALL"), ("status", "STA"), ("cli", "CLI")], id: \.0) { tag, label in
-                                let selected = groupingMode == tag
-                                Button {
-                                    withAnimation(.easeInOut(duration: 0.15)) { groupingMode = tag }
-                                } label: {
-                                    PixelText(
-                                        text: label,
-                                        color: selected ? Color(red: 0.3, green: 0.85, blue: 0.4) : .white.opacity(0.3),
-                                        pixelSize: 1.3
-                                    )
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 4)
-                                    .background(
-                                        Rectangle().fill(selected ? .white.opacity(0.1) : .clear)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .background(Rectangle().fill(.white.opacity(0.05)))
-                        .overlay(Rectangle().stroke(.white.opacity(0.1), lineWidth: 1))
-                    }
-                } else {
-                    MascotView(source: displaySource, status: displayStatus, size: mascotSize)
-                        .id(displaySource)
-                        .animation(.easeInOut(duration: 0.3), value: displaySource)
+            MascotView(source: displaySource, status: displayStatus, size: mascotSize)
+                .id(displaySource)
+                .animation(.easeInOut(duration: 0.3), value: displaySource)
 
-                    // On notch screens, show tool name only (no description, space is tight)
-                    if hasNotch, showToolStatus, let tool = shownTool {
-                        Text(tool)
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundStyle(toolStatusColor(tool))
-                            .lineLimit(1)
-                            .fixedSize()
-                            .transition(.opacity)
+            if hasNotch, showToolStatus, let tool = shownTool {
+                Text(tool)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(toolStatusColor(tool))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .background(
+            IntrinsicWidthReader { width in
+                guard width > 0 else { return }
+                collapsedWidth = width
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var expandedContent: some View {
+        HStack(spacing: 6) {
+            AppLogoView(size: 36, showBackground: false)
+            if appState.sessions.count > 1 {
+                HStack(spacing: 1) {
+                    ForEach([("all", "ALL"), ("status", "STA"), ("cli", "CLI")], id: \.0) { tag, label in
+                        let selected = groupingMode == tag
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) { groupingMode = tag }
+                        } label: {
+                            PixelText(
+                                text: label,
+                                color: selected ? Color(red: 0.3, green: 0.85, blue: 0.4) : .white.opacity(0.3),
+                                pixelSize: 1.3
+                            )
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 4)
+                            .background(
+                                Rectangle().fill(selected ? .white.opacity(0.1) : .clear)
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
+                .background(Rectangle().fill(.white.opacity(0.05)))
+                .overlay(Rectangle().stroke(.white.opacity(0.1), lineWidth: 1))
             }
-            .transition(.asymmetric(
-                insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .leading)),
-                removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .leading))
-            ))
-            .animation(NotchAnimation.open, value: expanded)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .background(
+            IntrinsicWidthReader { width in
+                guard width > 0 else { return }
+                expandedWidth = width
+            }
+        )
+    }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            collapsedContent
+                .opacity(1 - collapsedFadeProgress)
+                .scaleEffect(
+                    x: 1 - collapsedFadeProgress * 0.045,
+                    y: 1 - collapsedFadeProgress * 0.02,
+                    anchor: .leading
+                )
+                .offset(x: -collapsedFadeProgress * 8, y: collapsedFadeProgress * 0.4)
+                .blur(radius: collapsedFadeProgress * 0.9)
+
+            expandedContent
+                .opacity(expandedRevealProgress)
+                .scaleEffect(
+                    x: 0.92 + expandedRevealProgress * 0.08,
+                    y: 0.96 + expandedRevealProgress * 0.04,
+                    anchor: .leading
+                )
+                .offset(
+                    x: (1 - expandedRevealProgress) * 11,
+                    y: (1 - expandedRevealProgress) * -1.5
+                )
+                .blur(radius: (1 - expandedRevealProgress) * 1.3)
+                .allowsHitTesting(expandedRevealProgress > 0.96)
         }
         .padding(.leading, 6)
+        .frame(width: frameWidth, alignment: .leading)
         .clipped()
+        .onAppear {
+            morphProgress = expanded ? 1 : 0
+        }
+        .onChange(of: expanded) { _, _ in
+            animateToExpandedState()
+        }
         .onChange(of: liveTool) { _, newTool in
             lingerTimer?.invalidate()
             if let newTool {
@@ -428,6 +531,12 @@ private struct CompactRightWing: View {
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
     @AppStorage(SettingsKey.showToolStatus) private var showToolStatus = SettingsDefaults.showToolStatus
+    @State private var morphProgress: CGFloat = 0
+    @State private var collapsedWidth: CGFloat = 28
+    @State private var expandedWidth: CGFloat = 82
+
+    private static let expandSpring = Animation.spring(response: 0.34, dampingFraction: 0.78)
+    private static let collapseSpring = Animation.spring(response: 0.3, dampingFraction: 0.86)
 
     private var displaySessionId: String? {
         appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
@@ -437,70 +546,141 @@ private struct CompactRightWing: View {
         return (cwd as NSString).lastPathComponent
     }
 
-    var body: some View {
-        HStack(spacing: 6) {
-            Group {
-                if expanded {
-                    HStack(spacing: 6) {
-                        NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
-                            soundEnabled.toggle()
-                        }
-                        NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
-                            SettingsWindowController.shared.show()
-                        }
-                        NotchIconButton(icon: "power", tint: Color(red: 1.0, green: 0.4, blue: 0.4), tooltip: l10n["quit"]) {
-                            NSApplication.shared.terminate(nil)
-                        }
-                    }
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.9, anchor: .trailing)),
-                        removal: .opacity.combined(with: .scale(scale: 0.96, anchor: .trailing))
-                    ))
-                } else {
-                // Pending approval/question badge
-                if appState.status == .waitingApproval || appState.status == .waitingQuestion {
-                    Image(systemName: "bell.fill")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(Color(red: 1.0, green: 0.7, blue: 0.28))
-                        .symbolEffect(.pulse, options: .repeating)
-                }
+    private var widthProgress: CGFloat {
+        stagedProgress(morphProgress, start: 0.08, end: 0.92)
+    }
 
-                if showToolStatus {
-                    // Detailed mode: session count (project name is shown in center on non-notch)
-                    HStack(spacing: 1) {
-                        let active = appState.activeSessionCount
-                        let total = appState.totalSessionCount
-                        if active > 0 {
-                            Text("\(active)")
-                                .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
-                            Text("/")
-                                .foregroundStyle(.white.opacity(0.4))
-                        }
-                        Text("\(total)")
-                            .foregroundStyle(.white.opacity(0.9))
-                    }
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                } else {
-                    // Simple mode: original session count only
-                    HStack(spacing: 1) {
-                        let active = appState.activeSessionCount
-                        let total = appState.totalSessionCount
-                        if active > 0 {
-                            Text("\(active)")
-                                .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
-                            Text("/")
-                                .foregroundStyle(.white.opacity(0.4))
-                        }
-                        Text("\(total)")
-                            .foregroundStyle(.white.opacity(0.9))
-                    }
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                }
-                }
+    private var collapsedFadeProgress: CGFloat {
+        stagedProgress(morphProgress, start: 0.18, end: 0.56)
+    }
+
+    private var expandedRevealProgress: CGFloat {
+        stagedProgress(morphProgress, start: 0.24, end: 0.96)
+    }
+
+    private var frameWidth: CGFloat {
+        let from = max(collapsedWidth, 24)
+        let to = max(expandedWidth, 76)
+        return from + (to - from) * widthProgress
+    }
+
+    private func stagedProgress(_ value: CGFloat, start: CGFloat, end: CGFloat) -> CGFloat {
+        guard end > start else { return value >= end ? 1 : 0 }
+        let normalized = min(max((value - start) / (end - start), 0), 1)
+        return normalized * normalized * (3 - 2 * normalized)
+    }
+
+    private func animateToExpandedState() {
+        withAnimation(expanded ? Self.expandSpring : Self.collapseSpring) {
+            morphProgress = expanded ? 1 : 0
+        }
+    }
+
+    @ViewBuilder
+    private var collapsedContent: some View {
+        HStack(spacing: 6) {
+            if appState.status == .waitingApproval || appState.status == .waitingQuestion {
+                Image(systemName: "bell.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color(red: 1.0, green: 0.7, blue: 0.28))
+                    .symbolEffect(.pulse, options: .repeating)
             }
-            .animation(NotchAnimation.open, value: expanded)
+
+            if showToolStatus {
+                HStack(spacing: 1) {
+                    let active = appState.activeSessionCount
+                    let total = appState.totalSessionCount
+                    if active > 0 {
+                        Text("\(active)")
+                            .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
+                        Text("/")
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    Text("\(total)")
+                        .foregroundStyle(.white.opacity(0.9))
+                }
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            } else {
+                HStack(spacing: 1) {
+                    let active = appState.activeSessionCount
+                    let total = appState.totalSessionCount
+                    if active > 0 {
+                        Text("\(active)")
+                            .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
+                        Text("/")
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    Text("\(total)")
+                        .foregroundStyle(.white.opacity(0.9))
+                }
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .background(
+            IntrinsicWidthReader { width in
+                guard width > 0 else { return }
+                collapsedWidth = width
+            }
+        )
+    }
+
+    private var expandedContent: some View {
+        HStack(spacing: 6) {
+            NotchIconButton(icon: soundEnabled ? "speaker.wave.2" : "speaker.slash", tooltip: soundEnabled ? l10n["mute"] : l10n["enable_sound_tooltip"]) {
+                soundEnabled.toggle()
+            }
+            NotchIconButton(icon: "gearshape", tooltip: l10n["settings"]) {
+                SettingsWindowController.shared.show()
+            }
+            NotchIconButton(icon: "power", tint: Color(red: 1.0, green: 0.4, blue: 0.4), tooltip: l10n["quit"]) {
+                NSApplication.shared.terminate(nil)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .background(
+            IntrinsicWidthReader { width in
+                guard width > 0 else { return }
+                expandedWidth = width
+            }
+        )
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            collapsedContent
+                .opacity(1 - collapsedFadeProgress)
+                .scaleEffect(
+                    x: 1 - collapsedFadeProgress * 0.04,
+                    y: 1 - collapsedFadeProgress * 0.02,
+                    anchor: .trailing
+                )
+                .offset(x: collapsedFadeProgress * 8, y: collapsedFadeProgress * 0.4)
+                .blur(radius: collapsedFadeProgress * 0.8)
+
+            expandedContent
+                .opacity(expandedRevealProgress)
+                .scaleEffect(
+                    x: 0.9 + expandedRevealProgress * 0.1,
+                    y: 0.95 + expandedRevealProgress * 0.05,
+                    anchor: .trailing
+                )
+                .offset(
+                    x: (1 - expandedRevealProgress) * 10,
+                    y: (1 - expandedRevealProgress) * -1.5
+                )
+                .blur(radius: (1 - expandedRevealProgress) * 1.2)
+                .allowsHitTesting(expandedRevealProgress > 0.96)
         }
         .padding(.trailing, 6)
+        .frame(width: frameWidth, alignment: .trailing)
+        .clipped()
+        .onAppear {
+            morphProgress = expanded ? 1 : 0
+        }
+        .onChange(of: expanded) { _, _ in
+            animateToExpandedState()
+        }
     }
 }
 
@@ -662,21 +842,65 @@ private struct IdleIndicatorBar: View {
     let showInlineActions: Bool
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
-    @State private var actionProgress: CGFloat = 0
-    @State private var hoverProgress: CGFloat = 0
+    @State private var morphProgress: CGFloat = 0
+
+    private static let wakeSpring = Animation.spring(response: 0.25, dampingFraction: 0.7)
+    private static let expandSpring = Animation.spring(response: 0.36, dampingFraction: 0.76)
+    private static let collapseSpring = Animation.spring(response: 0.3, dampingFraction: 0.84)
+
+    private var targetMorphProgress: CGFloat {
+        if showInlineActions { return 1 }
+        if hovered { return 0.24 }
+        return 0
+    }
+
+    /// Hover first "wakes" the mascot, then the shell expands, then the trailing controls
+    /// bloom out of the right edge. All three phases are sampled from one shared progress.
+    private var wakeProgress: CGFloat {
+        stagedProgress(morphProgress, start: 0.0, end: 0.28)
+    }
+
+    private var leftRevealProgress: CGFloat {
+        stagedProgress(morphProgress, start: 0.08, end: 0.72)
+    }
+
+    private var rightRevealProgress: CGFloat {
+        stagedProgress(morphProgress, start: 0.22, end: 0.96)
+    }
+
+    private func stagedProgress(_ value: CGFloat, start: CGFloat, end: CGFloat) -> CGFloat {
+        guard end > start else { return value >= end ? 1 : 0 }
+        let normalized = min(max((value - start) / (end - start), 0), 1)
+        return normalized * normalized * (3 - 2 * normalized)
+    }
 
     /// Keep the trailing controls pinned to the island edge while the shell morphs,
     /// instead of removing them from layout before the width spring finishes.
     private var actionWingWidth: CGFloat {
-        compactWingWidth + 104 * actionProgress
+        compactWingWidth + 118 * rightRevealProgress
     }
 
     private var mascotWingWidth: CGFloat {
-        compactWingWidth + 18 * actionProgress
+        compactWingWidth + 8 * wakeProgress + 18 * leftRevealProgress
     }
 
     private var mascotEmphasis: CGFloat {
-        max(actionProgress, hoverProgress)
+        max(wakeProgress, leftRevealProgress)
+    }
+
+    private func animateToTarget() {
+        let target = targetMorphProgress
+        let animation: Animation
+        if target == 0 {
+            animation = Self.collapseSpring
+        } else if target < 1 {
+            animation = Self.wakeSpring
+        } else {
+            animation = Self.expandSpring
+        }
+        withAnimation(animation) {
+            morphProgress = target
+        }
     }
 
     var body: some View {
@@ -685,7 +909,12 @@ private struct IdleIndicatorBar: View {
             HStack(spacing: 6) {
                 MascotView(source: "claude", status: .idle, size: mascotSize)
                     .opacity(0.5 + mascotEmphasis * 0.4)
-                    .scaleEffect(1 + actionProgress * 0.03, anchor: .leading)
+                    .scaleEffect(
+                        x: 1 + wakeProgress * 0.025 + leftRevealProgress * 0.03,
+                        y: 1 - leftRevealProgress * 0.018,
+                        anchor: .leading
+                    )
+                    .offset(x: wakeProgress * 1.5 + leftRevealProgress, y: -wakeProgress * 0.8)
             }
             .padding(.leading, 6)
             .frame(width: mascotWingWidth, alignment: .leading)
@@ -714,25 +943,25 @@ private struct IdleIndicatorBar: View {
             .padding(.trailing, 6)
             .frame(width: actionWingWidth, alignment: .trailing)
             .clipped()
-            .opacity(actionProgress)
-            .scaleEffect(0.9 + actionProgress * 0.1, anchor: .trailing)
-            .offset(x: (1 - actionProgress) * 12)
-            .allowsHitTesting(actionProgress > 0.98)
+            .opacity(rightRevealProgress)
+            .scaleEffect(
+                x: 0.86 + rightRevealProgress * 0.14,
+                y: 0.92 + rightRevealProgress * 0.08,
+                anchor: .trailing
+            )
+            .offset(x: (1 - rightRevealProgress) * 16, y: (1 - rightRevealProgress) * -2)
+            .blur(radius: (1 - rightRevealProgress) * 1.4)
+            .allowsHitTesting(rightRevealProgress > 0.98)
         }
         .frame(height: notchHeight)
         .onAppear {
-            actionProgress = showInlineActions ? 1 : 0
-            hoverProgress = hovered ? 1 : 0
+            morphProgress = targetMorphProgress
         }
-        .onChange(of: hovered) { _, newValue in
-            withAnimation(NotchAnimation.micro) {
-                hoverProgress = newValue ? 1 : 0
-            }
+        .onChange(of: hovered) { _, _ in
+            animateToTarget()
         }
-        .onChange(of: showInlineActions) { _, newValue in
-            withAnimation(newValue ? NotchAnimation.open : NotchAnimation.close) {
-                actionProgress = newValue ? 1 : 0
-            }
+        .onChange(of: showInlineActions) { _, _ in
+            animateToTarget()
         }
     }
 }
