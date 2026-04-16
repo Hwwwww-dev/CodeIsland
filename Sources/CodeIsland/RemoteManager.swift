@@ -15,6 +15,23 @@ final class RemoteManager: ObservableObject {
     private let defaults = UserDefaults.standard
     private let hostsKey = "remoteHosts"
 
+    // Auto-reconnect (#92): when an ssh tunnel drops without the user asking for
+    // it (laptop sleep / network blip / server bounce), schedule a retry with
+    // exponential backoff instead of leaving the host silently disconnected.
+    private var reconnectTasks: [String: Task<Void, Never>] = [:]
+    private var reconnectAttempts: [String: Int] = [:]
+
+    private static let reconnectBackoffSeconds: [Int] = [5, 15, 45, 120, 300]
+    private static let reconnectMaxAttempts = 10
+
+    /// Delay (seconds) before the nth reconnect attempt (1-based). Clamped to the
+    /// last entry for attempts beyond the table.
+    static func reconnectDelay(attempt: Int) -> Int {
+        guard attempt >= 1 else { return reconnectBackoffSeconds[0] }
+        let idx = min(attempt - 1, reconnectBackoffSeconds.count - 1)
+        return reconnectBackoffSeconds[idx]
+    }
+
     private init() {
         load()
     }
@@ -61,6 +78,14 @@ final class RemoteManager: ObservableObject {
     }
 
     func connect(id: String) {
+        // User-initiated connect (or autoConnect at startup): clear any pending
+        // reconnect countdown and reset the backoff attempt counter.
+        cancelScheduledReconnect(id: id)
+        reconnectAttempts[id] = nil
+        connectInternal(id: id)
+    }
+
+    private func connectInternal(id: String) {
         guard let host = hosts.first(where: { $0.id == id }) else { return }
         guard !host.sshTarget.isEmpty else {
             connectionStatus[id] = .failed("invalid host")
@@ -88,6 +113,8 @@ final class RemoteManager: ObservableObject {
     }
 
     func disconnect(id: String) {
+        cancelScheduledReconnect(id: id)
+        reconnectAttempts[id] = nil
         forwarders[id]?.disconnect()
         forwarders[id] = nil
         connectionStatus[id] = .disconnected
@@ -100,17 +127,57 @@ final class RemoteManager: ObservableObject {
 
         switch status {
         case .connected:
+            // Tunnel is up again — forget previous failure counter.
+            reconnectAttempts[host.id] = nil
+            cancelScheduledReconnect(id: host.id)
             Task { await installHooks(for: host) }
         case .failed(let message):
             installRunning[host.id] = false
             lastMessage[host.id] = message
             onDisconnect?(host.id)
+            scheduleReconnect(for: host)
         case .disconnected:
+            // User-initiated disconnects go through disconnect(id:) which already
+            // cleared reconnect state before we get here.
             installRunning[host.id] = false
             onDisconnect?(host.id)
         case .connecting:
             break
         }
+    }
+
+    private func scheduleReconnect(for host: RemoteHost) {
+        // Only auto-reconnect hosts the user opted into; otherwise a failing
+        // manually-triggered connect would keep retrying forever.
+        guard host.autoConnect else { return }
+
+        cancelScheduledReconnect(id: host.id)
+        let nextAttempt = (reconnectAttempts[host.id] ?? 0) + 1
+        guard nextAttempt <= Self.reconnectMaxAttempts else {
+            lastMessage[host.id] = "Gave up after \(Self.reconnectMaxAttempts) reconnect attempts"
+            return
+        }
+        reconnectAttempts[host.id] = nextAttempt
+        let delay = Self.reconnectDelay(attempt: nextAttempt)
+        lastMessage[host.id] = "Reconnecting in \(delay)s (attempt \(nextAttempt)/\(Self.reconnectMaxAttempts))"
+
+        let hostId = host.id
+        reconnectTasks[hostId] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                // Task may have been cancelled after the sleep; double-check.
+                guard self.reconnectTasks[hostId] != nil else { return }
+                self.reconnectTasks[hostId] = nil
+                self.connectInternal(id: hostId)
+            }
+        }
+    }
+
+    private func cancelScheduledReconnect(id: String) {
+        reconnectTasks[id]?.cancel()
+        reconnectTasks[id] = nil
     }
 
     private func installHooks(for host: RemoteHost) async {
