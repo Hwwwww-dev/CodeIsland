@@ -38,6 +38,14 @@ struct UsageBarView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
         }
+        .onAppear {
+            RateLimitMonitor.shared.start()
+            CodexUsageMonitor.shared.start()
+        }
+        .onDisappear {
+            RateLimitMonitor.shared.stop()
+            CodexUsageMonitor.shared.stop()
+        }
     }
 }
 

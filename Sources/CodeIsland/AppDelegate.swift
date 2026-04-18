@@ -42,11 +42,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appState.startSessionDiscovery()
         RemoteManager.shared.startup()
 
-        // Usage monitors — poll Pulse cache + Codex JSONL every 5 min.
-        // Both are file-only reads; no network traffic.
-        RateLimitMonitor.shared.start()
-        CodexUsageMonitor.shared.start()
-
         // Hooks auto-recovery: periodic + app activation trigger
         hookRecoveryTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor in

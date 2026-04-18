@@ -11,6 +11,11 @@ struct ProcessIdentity: Equatable {
     let startTime: Date?
 }
 
+private struct DiscoveryWatchEntry {
+    let source: String
+    let path: String
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -46,7 +51,8 @@ final class AppState {
     private var fsEventStream: FSEventStreamRef?
     private var lastFSScanTime: Date = .distantPast
     private var discoveryScanTask: Task<Void, Never>?
-    private var pendingDiscoveryRescan = false
+    private var pendingDiscoveryScope: DiscoveryScanScope = .none
+    private var discoveryWatchEntries: [DiscoveryWatchEntry] = []
     private var isShowingCompletion: Bool {
         if case .completionCard = surface { return true }
         return false
@@ -1583,40 +1589,41 @@ final class AppState {
         refreshDerivedState()
     }
 
-    private nonisolated static func findDiscoveredSessions() -> [DiscoveredSession] {
+    private nonisolated static func findDiscoveredSessions(sources: Set<String>? = nil) -> [DiscoveredSession] {
+        let requestedSources = sources
         let candidatePids = allProcessIds()
         var discovered: [DiscoveredSession] = []
-        if ConfigInstaller.isEnabled(source: "claude") {
+        if (requestedSources?.contains("claude") ?? true) && ConfigInstaller.isEnabled(source: "claude") {
             discovered.append(contentsOf: findActiveClaudeSessions(candidatePids: candidatePids))
         }
-        if ConfigInstaller.isEnabled(source: "codex") {
+        if (requestedSources?.contains("codex") ?? true) && ConfigInstaller.isEnabled(source: "codex") {
             discovered.append(contentsOf: findActiveCodexSessions(candidatePids: candidatePids))
         }
-        if ConfigInstaller.isEnabled(source: "gemini") {
+        if (requestedSources?.contains("gemini") ?? true) && ConfigInstaller.isEnabled(source: "gemini") {
             discovered.append(contentsOf: findActiveGeminiSessions(candidatePids: candidatePids))
         }
-        if ConfigInstaller.isEnabled(source: "qoder") {
+        if (requestedSources?.contains("qoder") ?? true) && ConfigInstaller.isEnabled(source: "qoder") {
             discovered.append(contentsOf: findActiveQoderSessions(candidatePids: candidatePids))
         }
-        if ConfigInstaller.isEnabled(source: "codebuddy") {
+        if (requestedSources?.contains("codebuddy") ?? true) && ConfigInstaller.isEnabled(source: "codebuddy") {
             discovered.append(contentsOf: findActiveCodeBuddySessions(candidatePids: candidatePids))
         }
-        if ConfigInstaller.isEnabled(source: "droid") {
+        if (requestedSources?.contains("droid") ?? true) && ConfigInstaller.isEnabled(source: "droid") {
             discovered.append(contentsOf: findActiveFactorySessions(candidatePids: candidatePids))
         }
-        if ConfigInstaller.isEnabled(source: "cursor") {
+        if (requestedSources?.contains("cursor") ?? true) && ConfigInstaller.isEnabled(source: "cursor") {
             discovered.append(contentsOf: findActiveCursorSessions(candidatePids: candidatePids))
         }
-        if ConfigInstaller.isEnabled(source: "copilot") {
+        if (requestedSources?.contains("copilot") ?? true) && ConfigInstaller.isEnabled(source: "copilot") {
             discovered.append(contentsOf: findActiveCopilotSessions(candidatePids: candidatePids))
         }
-        if ConfigInstaller.isEnabled(source: "opencode") {
+        if (requestedSources?.contains("opencode") ?? true) && ConfigInstaller.isEnabled(source: "opencode") {
             discovered.append(contentsOf: findActiveOpenCodeSessions(candidatePids: candidatePids))
         }
         return discovered
     }
 
-    private nonisolated static func discoveryWatchRoots() -> [String] {
+    private nonisolated static func discoveryWatchEntries() -> [DiscoveryWatchEntry] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates: [(String, String)] = [
             ("claude", "\(home)/.claude/projects"),
@@ -1632,19 +1639,19 @@ final class AppState {
         let fm = FileManager.default
         return candidates.compactMap { source, path in
             guard ConfigInstaller.isEnabled(source: source), fm.fileExists(atPath: path) else { return nil }
-            return path
+            return DiscoveryWatchEntry(source: source, path: path)
         }
     }
 
-    private func requestDiscoveryScan() {
+    private func requestDiscoveryScan(sources: Set<String>? = nil) {
         if discoveryScanTask != nil {
-            pendingDiscoveryRescan = true
+            pendingDiscoveryScope.merge(sources)
             return
         }
 
-        pendingDiscoveryRescan = false
+        let requestedSources = sources
         discoveryScanTask = Task.detached { [weak self] in
-            let discovered = Self.findDiscoveredSessions()
+            let discovered = Self.findDiscoveredSessions(sources: requestedSources)
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
@@ -1654,8 +1661,14 @@ final class AppState {
                 }
                 self.integrateDiscovered(discovered)
                 self.discoveryScanTask = nil
-                if self.pendingDiscoveryRescan {
-                    self.pendingDiscoveryRescan = false
+                let pendingScope = self.pendingDiscoveryScope
+                self.pendingDiscoveryScope = .none
+                switch pendingScope {
+                case .none:
+                    break
+                case .sources(let sources):
+                    self.requestDiscoveryScan(sources: sources)
+                case .all:
                     self.requestDiscoveryScan()
                 }
             }
@@ -1676,8 +1689,10 @@ final class AppState {
     /// FSEventStream on known session-store roots — fires when transcript/event files change.
     private func startProjectsWatcher() {
         guard fsEventStream == nil else { return }
-        let watchRoots = Self.discoveryWatchRoots()
-        guard !watchRoots.isEmpty else { return }
+        let watchEntries = Self.discoveryWatchEntries()
+        guard !watchEntries.isEmpty else { return }
+        let watchRoots = watchEntries.map(\.path)
+        discoveryWatchEntries = watchEntries
 
         var context = FSEventStreamContext()
         // passUnretained is safe here: the stream is dispatched on .main (same as
@@ -1688,10 +1703,17 @@ final class AppState {
 
         let stream = FSEventStreamCreate(
             nil,
-            { (_, info, _, _, _, _) in
+            { (_, info, _, eventPaths, _, _) in
                 guard let info = info else { return }
                 let appState = Unmanaged<AppState>.fromOpaque(info).takeUnretainedValue()
-                appState.handleProjectsDirChange()
+                let changedPaths: [String]
+                if let eventPaths {
+                    let array = unsafeBitCast(eventPaths, to: NSArray.self)
+                    changedPaths = array as? [String] ?? []
+                } else {
+                    changedPaths = []
+                }
+                appState.handleProjectsDirChange(changedPaths: changedPaths)
             },
             &context,
             watchRoots as CFArray,
@@ -1708,14 +1730,29 @@ final class AppState {
     }
 
     /// Called by FSEventStream when a known session-store directory changes.
-    nonisolated private func handleProjectsDirChange() {
+    nonisolated private func handleProjectsDirChange(changedPaths: [String]) {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             // Debounce: skip if scanned within the last 3 seconds
             guard Date().timeIntervalSince(self.lastFSScanTime) > 3 else { return }
             self.lastFSScanTime = Date()
-            self.requestDiscoveryScan()
+            let sources = self.discoverySources(for: changedPaths)
+            self.requestDiscoveryScan(sources: sources)
         }
+    }
+
+    private func discoverySources(for changedPaths: [String]) -> Set<String>? {
+        guard !changedPaths.isEmpty else { return nil }
+
+        // FSEvents may fire frequently on a single tool's session store. Restrict the
+        // fallback discovery pass to the affected sources instead of rescanning every CLI.
+        let matchedSources = Set(changedPaths.compactMap { changedPath in
+            discoveryWatchEntries.first(where: {
+                changedPath.hasPrefix($0.path) || $0.path.hasPrefix(changedPath)
+            })?.source
+        })
+
+        return matchedSources.isEmpty ? nil : matchedSources
     }
 
     /// Merge discovered sessions into current state (skip already-known ones)
@@ -1837,7 +1874,8 @@ final class AppState {
         saveTimer = nil
         discoveryScanTask?.cancel()
         discoveryScanTask = nil
-        pendingDiscoveryRescan = false
+        pendingDiscoveryScope = .none
+        discoveryWatchEntries = []
         for key in Array(processMonitors.keys) { stopMonitor(key) }
     }
 
