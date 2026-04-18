@@ -74,11 +74,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         #endif
 
-        // Check for updates silently after a short delay
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            UpdateChecker.shared.checkForUpdates()
-        }
+        // Disabled: 二次开发版本禁用内置更新检查。
+        // Task { @MainActor in
+        //     try? await Task.sleep(nanoseconds: 5_000_000_000)
+        //     UpdateChecker.shared.checkForUpdates()
+        // }
 
         SoundManager.shared.playBoot()
         setupGlobalShortcut()

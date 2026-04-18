@@ -1143,8 +1143,8 @@ private struct AboutPage: View {
                     aboutLink("Issues", icon: "ladybug", url: "https://github.com/wxtsky/CodeIsland/issues")
                 }
 
-                // In-app update section
-                updateSection
+                // Disabled: 二次开发版本不提供内置更新 UI。
+                // updateSection
 
                 Button {
                     DiagnosticsExporter.export()
