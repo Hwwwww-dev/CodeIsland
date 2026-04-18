@@ -890,6 +890,13 @@ private struct IdleIndicatorBar: View {
         max(wakeProgress, leftRevealProgress)
     }
 
+    private var shouldAnimateMascot: Bool {
+        IdleIndicatorAnimationPolicy.shouldAnimateMascot(
+            hovered: hovered,
+            showInlineActions: showInlineActions
+        )
+    }
+
     private func animateToTarget() {
         let target = targetMorphProgress
         let animation: Animation
@@ -909,7 +916,7 @@ private struct IdleIndicatorBar: View {
         HStack(spacing: 0) {
             // Left: mascot
             HStack(spacing: 6) {
-                MascotView(source: "claude", status: .idle, size: mascotSize)
+                MascotView(source: "claude", status: .idle, size: mascotSize, animated: shouldAnimateMascot)
                     .opacity(0.5 + mascotEmphasis * 0.4)
                     .scaleEffect(
                         x: 1 + wakeProgress * 0.025 + leftRevealProgress * 0.03,

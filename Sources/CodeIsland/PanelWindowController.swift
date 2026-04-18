@@ -135,7 +135,6 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     private var visibilityTimer: Timer?
     private var autoScreenPoller: Timer?
     private var fullscreenPoller: Timer?
-    private var sessionObservationTask: Task<Void, Never>?
     private var fullscreenLatch = false
     private var settingsObservers: [NSObjectProtocol] = []
     private var globalClickMonitor: Any?
@@ -234,18 +233,8 @@ class PanelWindowController: NSObject, NSWindowDelegate {
             }
         }
 
-        // Observe session changes via @Observable tracking
-        sessionObservationTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                withObservationTracking {
-                    _ = self?.appState.sessions
-                    _ = self?.appState.surface
-                } onChange: {
-                    Task { @MainActor in self?.updateVisibility() }
-                }
-                try? await Task.sleep(for: .milliseconds(500))
-            }
-        }
+        // Observe session changes via @Observable tracking without polling.
+        armSessionObservation()
 
         // Observe settings changes (display choice, panel height)
         observeSettingsChanges()
@@ -437,6 +426,19 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    private func armSessionObservation() {
+        withObservationTracking {
+            _ = appState.activeSessionCount
+            _ = appState.surface
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.updateVisibility()
+                self.armSessionObservation()
+            }
+        }
+    }
+
     private func updatePosition() {
         guard let panel = panel else { return }
         let screen = chosenScreen()
@@ -605,7 +607,6 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     }
 
     deinit {
-        sessionObservationTask?.cancel()
         autoScreenPoller?.invalidate()
         fullscreenPoller?.invalidate()
         for observer in settingsObservers {

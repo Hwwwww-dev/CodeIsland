@@ -19,6 +19,7 @@ struct MascotView: View {
     let source: String
     let status: AgentStatus
     var size: CGFloat = 27
+    var animated: Bool = true
     @AppStorage(SettingsKey.mascotSpeed) private var speedPct = SettingsDefaults.mascotSpeed
 
     var body: some View {
@@ -55,7 +56,7 @@ struct MascotView: View {
             case "hermes":
                 HermesView(status: status, size: size)
             default:
-                ClawdView(status: status, size: size)
+                ClawdView(status: status, size: size, animated: animated)
             }
         }
         .environment(\.mascotSpeed, Double(speedPct) / 100.0)

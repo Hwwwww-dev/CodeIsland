@@ -6,6 +6,7 @@ import CodeIslandCore
 struct ClawdView: View {
     let status: AgentStatus
     var size: CGFloat = 27
+    var animated: Bool = true
     @State private var alive = false
     @Environment(\.mascotSpeed) private var speed
 
@@ -20,7 +21,7 @@ struct ClawdView: View {
     var body: some View {
         ZStack {
             switch status {
-            case .idle:                 sleepScene
+            case .idle:                 animated ? sleepScene : staticSleepScene
             case .processing, .running: workScene
             case .waitingApproval, .waitingQuestion: alertScene
             }
@@ -32,6 +33,10 @@ struct ClawdView: View {
             alive = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { alive = true }
         }
+    }
+
+    private var staticSleepScene: some View {
+        sleepCanvas(t: 0)
     }
 
     // ── Coordinate helper: maps SVG units to view points ──
