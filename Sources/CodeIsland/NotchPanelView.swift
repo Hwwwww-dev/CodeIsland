@@ -916,7 +916,7 @@ private struct IdleIndicatorBar: View {
         HStack(spacing: 0) {
             // Left: mascot
             HStack(spacing: 6) {
-                MascotView(source: "claude", status: .idle, size: mascotSize, animated: shouldAnimateMascot)
+                MascotView(source: "claude", status: .idle, size: mascotSize, animated: true)
                     .opacity(0.5 + mascotEmphasis * 0.4)
                     .scaleEffect(
                         x: 1 + wakeProgress * 0.025 + leftRevealProgress * 0.03,
@@ -2033,14 +2033,11 @@ private struct SessionCard: View {
         HStack(alignment: .center, spacing: 8) {
             // Column 1: Character + subagent icons
             VStack(spacing: 3) {
-                // Idle mascots stay static unless this card is focused (hovered or
-                // surfaced as a completion card) — keeps expanded panels off the
-                // 30 fps TimelineView treadmill when the user isn't looking.
                 MascotView(
                     source: session.source,
                     status: session.status,
                     size: 32,
-                    animated: hovering || isCompletion
+                    animated: true
                 )
                 if showAgentDetails && !session.subagents.isEmpty {
                     let sorted = session.subagents.values.sorted { $0.startTime < $1.startTime }
