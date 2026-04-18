@@ -101,6 +101,10 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         )
     }
 
+    nonisolated static func shouldAutoPollScreens(displayChoice: String, screenCount: Int) -> Bool {
+        displayChoice == "auto" && screenCount > 1
+    }
+
     private var panel: NSPanel?
     private var hostingView: NotchHostingView<NotchPanelView>?
     private let appState: AppState
@@ -421,7 +425,10 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         autoScreenPoller?.invalidate()
         autoScreenPoller = nil
 
-        guard SettingsManager.shared.displayChoice == "auto" else { return }
+        guard Self.shouldAutoPollScreens(
+            displayChoice: SettingsManager.shared.displayChoice,
+            screenCount: NSScreen.screens.count
+        ) else { return }
 
         autoScreenPoller = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -598,6 +605,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     }
 
     deinit {
+        sessionObservationTask?.cancel()
         autoScreenPoller?.invalidate()
         fullscreenPoller?.invalidate()
         for observer in settingsObservers {

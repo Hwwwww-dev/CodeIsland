@@ -30,4 +30,16 @@ final class PanelWindowControllerTests: XCTestCase {
         XCTAssertEqual(frames.incoming.origin.y, newFrame.origin.y + 30)
         XCTAssertEqual(frames.incoming.size, newFrame.size)
     }
+
+    func testAutoScreenPollingDisabledOutsideAutoMode() {
+        XCTAssertFalse(PanelWindowController.shouldAutoPollScreens(displayChoice: "builtin", screenCount: 2))
+    }
+
+    func testAutoScreenPollingDisabledOnSingleDisplay() {
+        XCTAssertFalse(PanelWindowController.shouldAutoPollScreens(displayChoice: "auto", screenCount: 1))
+    }
+
+    func testAutoScreenPollingEnabledForAutoModeWithMultipleDisplays() {
+        XCTAssertTrue(PanelWindowController.shouldAutoPollScreens(displayChoice: "auto", screenCount: 2))
+    }
 }
