@@ -21,7 +21,12 @@ struct ClawdView: View {
     var body: some View {
         ZStack {
             switch status {
-            case .idle:                 animated ? sleepScene : staticSleepScene
+            case .idle:
+                if animated {
+                    sleepScene
+                } else {
+                    staticSleepScene
+                }
             case .processing, .running: workScene
             case .waitingApproval, .waitingQuestion: alertScene
             }

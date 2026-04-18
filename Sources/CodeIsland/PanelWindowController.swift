@@ -101,8 +101,20 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         )
     }
 
-    nonisolated static func shouldAutoPollScreens(displayChoice: String, screenCount: Int) -> Bool {
-        displayChoice == "auto" && screenCount > 1
+    nonisolated static func shouldAutoPollScreens(
+        displayChoice: String,
+        screenCount: Int,
+        activeSessionCount: Int
+    ) -> Bool {
+        displayChoice == "auto" && screenCount > 1 && activeSessionCount > 0
+    }
+
+    nonisolated static func didActiveSessionCountChange(
+        previousActiveSessionCount: Int?,
+        activeSessionCount: Int
+    ) -> Bool {
+        guard let previousActiveSessionCount else { return false }
+        return previousActiveSessionCount != activeSessionCount
     }
 
     private var panel: NSPanel?
@@ -147,6 +159,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     private var lastDisplayChoice = ""
     private var lastNotchHeightMode = SettingsDefaults.notchHeightMode
     private var lastCustomNotchHeight = SettingsDefaults.customNotchHeight
+    private var lastObservedActiveSessionCount: Int?
 
     init(appState: AppState) {
         self.appState = appState
@@ -234,6 +247,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         }
 
         // Observe session changes via @Observable tracking without polling.
+        lastObservedActiveSessionCount = appState.activeSessionCount
         armSessionObservation()
 
         // Observe settings changes (display choice, panel height)
@@ -416,7 +430,8 @@ class PanelWindowController: NSObject, NSWindowDelegate {
 
         guard Self.shouldAutoPollScreens(
             displayChoice: SettingsManager.shared.displayChoice,
-            screenCount: NSScreen.screens.count
+            screenCount: NSScreen.screens.count,
+            activeSessionCount: appState.activeSessionCount
         ) else { return }
 
         autoScreenPoller = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -433,6 +448,14 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                let activeSessionCount = self.appState.activeSessionCount
+                if Self.didActiveSessionCountChange(
+                    previousActiveSessionCount: self.lastObservedActiveSessionCount,
+                    activeSessionCount: activeSessionCount
+                ) {
+                    self.configureAutoScreenPolling()
+                }
+                self.lastObservedActiveSessionCount = activeSessionCount
                 self.updateVisibility()
                 self.armSessionObservation()
             }

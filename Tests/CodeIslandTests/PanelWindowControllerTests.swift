@@ -32,14 +32,72 @@ final class PanelWindowControllerTests: XCTestCase {
     }
 
     func testAutoScreenPollingDisabledOutsideAutoMode() {
-        XCTAssertFalse(PanelWindowController.shouldAutoPollScreens(displayChoice: "builtin", screenCount: 2))
+        XCTAssertFalse(
+            PanelWindowController.shouldAutoPollScreens(
+                displayChoice: "builtin",
+                screenCount: 2,
+                activeSessionCount: 1
+            )
+        )
     }
 
     func testAutoScreenPollingDisabledOnSingleDisplay() {
-        XCTAssertFalse(PanelWindowController.shouldAutoPollScreens(displayChoice: "auto", screenCount: 1))
+        XCTAssertFalse(
+            PanelWindowController.shouldAutoPollScreens(
+                displayChoice: "auto",
+                screenCount: 1,
+                activeSessionCount: 1
+            )
+        )
     }
 
-    func testAutoScreenPollingEnabledForAutoModeWithMultipleDisplays() {
-        XCTAssertTrue(PanelWindowController.shouldAutoPollScreens(displayChoice: "auto", screenCount: 2))
+    func testAutoScreenPollingDisabledWithoutActiveSessions() {
+        XCTAssertFalse(
+            PanelWindowController.shouldAutoPollScreens(
+                displayChoice: "auto",
+                screenCount: 2,
+                activeSessionCount: 0
+            )
+        )
+    }
+
+    func testAutoScreenPollingEnabledForAutoModeWithMultipleDisplaysAndActiveSessions() {
+        XCTAssertTrue(
+            PanelWindowController.shouldAutoPollScreens(
+                displayChoice: "auto",
+                screenCount: 2,
+                activeSessionCount: 1
+            )
+        )
+    }
+
+    func testActiveSessionCountChangeDetectionIgnoresInitialSnapshotAndSameValues() {
+        XCTAssertFalse(
+            PanelWindowController.didActiveSessionCountChange(
+                previousActiveSessionCount: nil,
+                activeSessionCount: 0
+            )
+        )
+        XCTAssertFalse(
+            PanelWindowController.didActiveSessionCountChange(
+                previousActiveSessionCount: 1,
+                activeSessionCount: 1
+            )
+        )
+    }
+
+    func testActiveSessionCountChangeDetectionTriggersReconfigureOnTransitions() {
+        XCTAssertTrue(
+            PanelWindowController.didActiveSessionCountChange(
+                previousActiveSessionCount: 0,
+                activeSessionCount: 1
+            )
+        )
+        XCTAssertTrue(
+            PanelWindowController.didActiveSessionCountChange(
+                previousActiveSessionCount: 2,
+                activeSessionCount: 0
+            )
+        )
     }
 }

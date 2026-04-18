@@ -77,9 +77,23 @@ final class AppState {
         guard cleanupTimer == nil else { return }
         cleanupTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.cleanupIdleSessions()
+                guard let self,
+                      Self.shouldRunCleanup(
+                          sessionCount: self.sessions.count,
+                          monitorCount: self.processMonitors.count,
+                          exitingCount: self.exitingSessions.count
+                      ) else { return }
+                self.cleanupIdleSessions()
             }
         }
+    }
+
+    nonisolated static func shouldRunCleanup(
+        sessionCount: Int,
+        monitorCount: Int,
+        exitingCount: Int
+    ) -> Bool {
+        sessionCount > 0 || monitorCount > 0 || exitingCount > 0
     }
 
     private func cleanupIdleSessions() {
@@ -1706,13 +1720,8 @@ final class AppState {
             { (_, info, _, eventPaths, _, _) in
                 guard let info = info else { return }
                 let appState = Unmanaged<AppState>.fromOpaque(info).takeUnretainedValue()
-                let changedPaths: [String]
-                if let eventPaths {
-                    let array = unsafeBitCast(eventPaths, to: NSArray.self)
-                    changedPaths = array as? [String] ?? []
-                } else {
-                    changedPaths = []
-                }
+                let array = unsafeBitCast(eventPaths, to: NSArray.self)
+                let changedPaths = array as? [String] ?? []
                 appState.handleProjectsDirChange(changedPaths: changedPaths)
             },
             &context,

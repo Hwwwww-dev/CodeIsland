@@ -15,28 +15,30 @@ struct UsageBarView: View {
         let claude = rateLimitMonitor.rateLimitInfo
         let codex = codexUsageMonitor.snapshot
 
-        if claude == nil && (codex?.isEmpty ?? true) {
-            EmptyView()
-        } else {
-            HStack(spacing: 12) {
-                if let info = claude {
-                    UsageChip(
-                        icon: "clock.fill",
-                        label: "Claude",
-                        text: info.displayText,
-                        color: info.color,
-                        tooltip: info.tooltip
-                    )
+        Group {
+            if claude == nil && (codex?.isEmpty ?? true) {
+                EmptyView()
+            } else {
+                HStack(spacing: 12) {
+                    if let info = claude {
+                        UsageChip(
+                            icon: "clock.fill",
+                            label: "Claude",
+                            text: info.displayText,
+                            color: info.color,
+                            tooltip: info.tooltip
+                        )
+                    }
+                    if let snapshot = codex, !snapshot.isEmpty {
+                        CodexUsageChip(snapshot: snapshot)
+                    }
+                    Spacer(minLength: 0)
                 }
-                if let snapshot = codex, !snapshot.isEmpty {
-                    CodexUsageChip(snapshot: snapshot)
-                }
-                Spacer(minLength: 0)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundColor(.white.opacity(0.85))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
             }
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
-            .foregroundColor(.white.opacity(0.85))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
         }
         .onAppear {
             RateLimitMonitor.shared.start()
