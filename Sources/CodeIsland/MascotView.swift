@@ -26,35 +26,35 @@ struct MascotView: View {
         Group {
             switch source {
             case "codex":
-                DexView(status: status, size: size)
+                DexView(status: status, size: size, animated: animated)
             case "gemini":
-                GeminiView(status: status, size: size)
+                GeminiView(status: status, size: size, animated: animated)
             case "cursor":
-                CursorView(status: status, size: size)
+                CursorView(status: status, size: size, animated: animated)
             case "trae", "traecn":
-                TraeView(status: status, size: size)
+                TraeView(status: status, size: size, animated: animated)
             case "copilot":
-                CopilotView(status: status, size: size)
+                CopilotView(status: status, size: size, animated: animated)
             case "qoder":
-                QoderView(status: status, size: size)
+                QoderView(status: status, size: size, animated: animated)
             case "droid":
-                DroidView(status: status, size: size)
+                DroidView(status: status, size: size, animated: animated)
             case "codebuddy":
-                BuddyView(status: status, size: size)
+                BuddyView(status: status, size: size, animated: animated)
             case "codybuddycn":
-                BuddyView(status: status, size: size)
+                BuddyView(status: status, size: size, animated: animated)
             case "stepfun":
-                StepFunView(status: status, size: size)
+                StepFunView(status: status, size: size, animated: animated)
             case "opencode":
-                OpenCodeView(status: status, size: size)
+                OpenCodeView(status: status, size: size, animated: animated)
             case "qwen":
-                QwenView(status: status, size: size)
+                QwenView(status: status, size: size, animated: animated)
             case "antigravity":
-                AntiGravityView(status: status, size: size)
+                AntiGravityView(status: status, size: size, animated: animated)
             case "workbuddy":
-                WorkBuddyView(status: status, size: size)
+                WorkBuddyView(status: status, size: size, animated: animated)
             case "hermes":
-                HermesView(status: status, size: size)
+                HermesView(status: status, size: size, animated: animated)
             default:
                 ClawdView(status: status, size: size, animated: animated)
             }

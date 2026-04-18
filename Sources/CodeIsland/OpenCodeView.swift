@@ -6,6 +6,7 @@ import CodeIslandCore
 struct OpenCodeView: View {
     let status: AgentStatus
     var size: CGFloat = 27
+    var animated: Bool = true
     @State private var alive = false
     @Environment(\.mascotSpeed) private var speed
 
@@ -22,7 +23,12 @@ struct OpenCodeView: View {
     var body: some View {
         ZStack {
             switch status {
-            case .idle:                 sleepScene
+            case .idle:
+                if animated {
+                    sleepScene
+                } else {
+                    staticSleepScene
+                }
             case .processing, .running: workScene
             case .waitingApproval, .waitingQuestion: alertScene
             }
@@ -152,6 +158,10 @@ struct OpenCodeView: View {
                 floatingZs(t: ctx.date.timeIntervalSinceReferenceDate * speed)
             }
         }
+    }
+
+    private var staticSleepScene: some View {
+        sleepCanvas(t: 0)
     }
 
     private func floatingZs(t: Double) -> some View {

@@ -6,6 +6,7 @@ import CodeIslandCore
 struct WorkBuddyView: View {
     let status: AgentStatus
     var size: CGFloat = 27
+    var animated: Bool = true
     @State private var alive = false
     @Environment(\.mascotSpeed) private var speed
 
@@ -21,7 +22,12 @@ struct WorkBuddyView: View {
     var body: some View {
         ZStack {
             switch status {
-            case .idle:                 sleepScene
+            case .idle:
+                if animated {
+                    sleepScene
+                } else {
+                    staticSleepScene
+                }
             case .processing, .running: workScene
             case .waitingApproval, .waitingQuestion: alertScene
             }
@@ -90,21 +96,29 @@ struct WorkBuddyView: View {
         c.fill(Path(v.r(8.5, 14, 1, 2, dy: legDy)), with: .color(Self.bodyDk.opacity(0.7)))
     }
 
+    private func sleepCanvas(t: Double) -> some View {
+        let phase = t.truncatingRemainder(dividingBy: 4.0) / 4.0
+        let float = sin(phase * .pi * 2) * 0.8
+        let blinkCycle = t.truncatingRemainder(dividingBy: 4.0)
+        let blink: CGFloat = (blinkCycle > 3.5 && blinkCycle < 3.7) ? 0.15 : 0.5
+        return Canvas { c, sz in
+            let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+            drawShadow(c, v: v, width: 6 + abs(float) * 0.3, opacity: 0.2)
+            drawLegs(c, v: v, dy: float)
+            drawBody(c, v: v, dy: float, scale: 0.9)
+            drawFace(c, v: v, dy: float, blinkPhase: blink)
+        }
+    }
+
+    private var staticSleepScene: some View {
+        sleepCanvas(t: 0)
+    }
+
     private var sleepScene: some View {
         ZStack {
             TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate * speed
-                let phase = t.truncatingRemainder(dividingBy: 4.0) / 4.0
-                let float = sin(phase * .pi * 2) * 0.8
-                let blinkCycle = t.truncatingRemainder(dividingBy: 4.0)
-                let blink: CGFloat = (blinkCycle > 3.5 && blinkCycle < 3.7) ? 0.15 : 0.5
-                Canvas { c, sz in
-                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
-                    drawShadow(c, v: v, width: 6 + abs(float) * 0.3, opacity: 0.2)
-                    drawLegs(c, v: v, dy: float)
-                    drawBody(c, v: v, dy: float, scale: 0.9)
-                    drawFace(c, v: v, dy: float, blinkPhase: blink)
-                }
+                sleepCanvas(t: t)
             }
             TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate * speed

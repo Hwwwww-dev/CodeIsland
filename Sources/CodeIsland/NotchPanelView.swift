@@ -2033,7 +2033,15 @@ private struct SessionCard: View {
         HStack(alignment: .center, spacing: 8) {
             // Column 1: Character + subagent icons
             VStack(spacing: 3) {
-                MascotView(source: session.source, status: session.status, size: 32)
+                // Idle mascots stay static unless this card is focused (hovered or
+                // surfaced as a completion card) — keeps expanded panels off the
+                // 30 fps TimelineView treadmill when the user isn't looking.
+                MascotView(
+                    source: session.source,
+                    status: session.status,
+                    size: 32,
+                    animated: hovering || isCompletion
+                )
                 if showAgentDetails && !session.subagents.isEmpty {
                     let sorted = session.subagents.values.sorted { $0.startTime < $1.startTime }
                     // Grid: 4 per row, 8px icons
