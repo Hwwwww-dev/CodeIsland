@@ -42,6 +42,8 @@ final class CodexUsageMonitor: ObservableObject {
 
     @Published private(set) var snapshot: CodexUsageSnapshot?
     private var isLoading = false
+    private var lastRefreshedAt: Date?
+    private static let refreshTTL: TimeInterval = 10
 
     private var refreshTimer: Timer?
 
@@ -61,13 +63,17 @@ final class CodexUsageMonitor: ObservableObject {
         snapshot = nil
     }
 
-    func refresh() async {
+    func refresh(force: Bool = false) async {
         guard !isLoading else { return }
+        if !force, let last = lastRefreshedAt, Date().timeIntervalSince(last) < Self.refreshTTL {
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         snapshot = await Task.detached(priority: .utility) {
             (try? CodexUsageLoader.load()) ?? nil
         }.value
+        lastRefreshedAt = Date()
     }
 }
 
@@ -76,6 +82,10 @@ final class CodexUsageMonitor: ObservableObject {
 enum CodexUsageLoader {
     static let defaultRootURL: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".codex/sessions", isDirectory: true)
+
+    /// Files older than this are skipped — token_count events beyond a week are stale
+    /// and not worth the stat/parse budget on every hover-triggered refresh.
+    private static let candidateMaxAge: TimeInterval = 7 * 24 * 3600
 
     private struct Candidate {
         var fileURL: URL
@@ -93,6 +103,7 @@ enum CodexUsageLoader {
                 options: [.skipsHiddenFiles]
               ) else { return nil }
 
+        let cutoff = Date().addingTimeInterval(-Self.candidateMaxAge)
         var candidates: [Candidate] = []
         for case let fileURL as URL in enumerator {
             guard fileURL.lastPathComponent.hasPrefix("rollout-"),
@@ -100,11 +111,10 @@ enum CodexUsageLoader {
                   let resourceValues = try? fileURL.resourceValues(
                     forKeys: [.contentModificationDateKey, .isRegularFileKey]
                   ),
-                  resourceValues.isRegularFile == true else { continue }
-            candidates.append(Candidate(
-                fileURL: fileURL,
-                modifiedAt: resourceValues.contentModificationDate ?? .distantPast
-            ))
+                  resourceValues.isRegularFile == true,
+                  let modifiedAt = resourceValues.contentModificationDate,
+                  modifiedAt >= cutoff else { continue }
+            candidates.append(Candidate(fileURL: fileURL, modifiedAt: modifiedAt))
         }
 
         let sortedCandidates = candidates.sorted { lhs, rhs in

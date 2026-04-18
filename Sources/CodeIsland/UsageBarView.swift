@@ -26,11 +26,15 @@ struct UsageBarView: View {
                             label: "Claude",
                             text: info.displayText,
                             color: info.color,
-                            tooltip: info.tooltip
+                            tooltip: info.tooltip,
+                            onTap: { Task { await RateLimitMonitor.shared.refresh(force: true) } }
                         )
                     }
                     if let snapshot = codex, !snapshot.isEmpty {
-                        CodexUsageChip(snapshot: snapshot)
+                        CodexUsageChip(
+                            snapshot: snapshot,
+                            onTap: { Task { await CodexUsageMonitor.shared.refresh(force: true) } }
+                        )
                     }
                     Spacer(minLength: 0)
                 }
@@ -57,6 +61,8 @@ private struct UsageChip: View {
     let text: String
     let color: Color
     let tooltip: String
+    var onTap: (() -> Void)? = nil
+    @State private var pulse: CGFloat = 1.0
 
     var body: some View {
         HStack(spacing: 4) {
@@ -64,12 +70,24 @@ private struct UsageChip: View {
             Text(label).foregroundColor(.white.opacity(0.6))
             Text(text).foregroundColor(color)
         }
+        .scaleEffect(pulse)
         .help(tooltip)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard let onTap else { return }
+            withAnimation(.easeOut(duration: 0.08)) { pulse = 0.94 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.55)) { pulse = 1.0 }
+            }
+            onTap()
+        }
     }
 }
 
 private struct CodexUsageChip: View {
     let snapshot: CodexUsageSnapshot
+    var onTap: (() -> Void)? = nil
+    @State private var pulse: CGFloat = 1.0
 
     private var displayText: String {
         snapshot.windows.prefix(2).map { w in
@@ -138,6 +156,16 @@ private struct CodexUsageChip: View {
             Text("Codex").foregroundColor(.white.opacity(0.6))
             Text(displayText).foregroundColor(color)
         }
+        .scaleEffect(pulse)
         .help(tooltip)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard let onTap else { return }
+            withAnimation(.easeOut(duration: 0.08)) { pulse = 0.94 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.55)) { pulse = 1.0 }
+            }
+            onTap()
+        }
     }
 }

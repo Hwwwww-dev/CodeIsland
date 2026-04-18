@@ -93,6 +93,8 @@ final class RateLimitMonitor: ObservableObject {
 
     @Published private(set) var rateLimitInfo: RateLimitDisplayInfo?
     private var isLoading = false
+    private var lastRefreshedAt: Date?
+    private static let refreshTTL: TimeInterval = 10
 
     private var refreshTimer: Timer?
     private(set) var isRunning = false
@@ -116,8 +118,11 @@ final class RateLimitMonitor: ObservableObject {
         refreshTimer = nil
     }
 
-    func refresh() async {
+    func refresh(force: Bool = false) async {
         guard !isLoading else { return }
+        if !force, let last = lastRefreshedAt, Date().timeIntervalSince(last) < Self.refreshTTL {
+            return
+        }
         isLoading = true
         defer { isLoading = false }
 
@@ -127,6 +132,7 @@ final class RateLimitMonitor: ObservableObject {
 
         if let info {
             rateLimitInfo = info
+            lastRefreshedAt = Date()
             return
         }
         let exists = await Task.detached(priority: .utility) {
@@ -135,6 +141,7 @@ final class RateLimitMonitor: ObservableObject {
         if !exists {
             rateLimitInfo = nil
         }
+        lastRefreshedAt = Date()
     }
 }
 
