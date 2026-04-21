@@ -186,9 +186,12 @@ enum CodexUsageLoader {
         )
     }
 
-    /// Derive a plausible reset timestamp AND detect whether the window has rolled over.
-    /// Raw future value wins; otherwise roll anchor forward and mark expired so the caller
-    /// can reset `used_percent` to 0 — matches the observable reality after a quiet gap.
+    /// Derive the reset timestamp AND detect whether the window has rolled over.
+    ///
+    /// Codex windows don't advance on a fixed wall-clock cadence — a new window only starts
+    /// when the user sends another message after the previous `resets_at`. So once the raw
+    /// value is in the past we return `(nil, true)`: caller zeroes `used_percent` and we show
+    /// no "resets in …" until a fresh rollout event provides a future `resets_at`.
     private static func resolveReset(raw: Date?, anchor: Date, windowMinutes: Int) -> (Date?, Bool) {
         let now = Date()
         let window = TimeInterval(windowMinutes) * 60
@@ -196,21 +199,13 @@ enum CodexUsageLoader {
 
         if let raw = raw {
             if raw > now { return (raw, false) }
-            var next = raw
-            var guardCount = 0
-            while next <= now && guardCount < 100_000 {
-                next = next.addingTimeInterval(window)
-                guardCount += 1
-            }
-            return (next, true)
+            return (nil, true)
         }
 
         let elapsed = now.timeIntervalSince(anchor)
         if elapsed <= 0 { return (anchor.addingTimeInterval(window), false) }
-        let steps = floor(elapsed / window) + 1
-        let candidate = anchor.addingTimeInterval(window * steps)
-        let expired = elapsed >= window
-        return (candidate, expired)
+        if elapsed >= window { return (nil, true) }
+        return (anchor.addingTimeInterval(window), false)
     }
 
     private static func windowLabel(forMinutes minutes: Int) -> String {

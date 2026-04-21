@@ -249,28 +249,22 @@ enum PulseUsageReader {
         return Date(timeIntervalSince1970: sec)
     }
 
-    /// Pick the freshest plausible reset time and report whether the window has rolled over.
+    /// Pick the freshest reset time and report whether the window has rolled over.
     ///
-    /// When `resets_at` is present but already in the past, advance along the window from **that**
-    /// instant — not from `updated_at`. Pulse updates `updated_at` on every cache write; anchoring
-    /// to it shifts the predicted "next reset" to ~5h after the last file refresh (typical ~30m skew).
+    /// Claude's 5h/7d windows are NOT a fixed wall-clock cadence: the next window only starts
+    /// on the first usage after the previous window expires. So once `resets_at` is in the
+    /// past, we can't infer the next boundary — there isn't one until the user sends another
+    /// message and Pulse rewrites the cache with a fresh `resets_at`. Until then: percent = 0,
+    /// reset time = nil.
     private static func resolveReset(raw: Date?, anchor: Date?, window: TimeInterval, now: Date) -> (Date?, Bool) {
         if let raw = raw {
             if raw > now { return (raw, false) }
-            var next = raw
-            var guardCount = 0
-            while next <= now && guardCount < 100_000 {
-                next = next.addingTimeInterval(window)
-                guardCount += 1
-            }
-            return (next, true)
+            return (nil, true)
         }
         guard let anchor = anchor else { return (nil, false) }
         let elapsed = now.timeIntervalSince(anchor)
         if elapsed <= 0 { return (anchor.addingTimeInterval(window), false) }
-        let steps = floor(elapsed / window) + 1
-        let candidate = anchor.addingTimeInterval(window * steps)
-        let expired = elapsed >= window
-        return (candidate, expired)
+        if elapsed >= window { return (nil, true) }
+        return (anchor.addingTimeInterval(window), false)
     }
 }
