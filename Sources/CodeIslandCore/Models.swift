@@ -1,6 +1,67 @@
 import Foundation
 
-public enum AgentStatus {
+public enum CLIProcessResolver {
+    public static func sourceMatchesExecutablePath(_ path: String, source: String?) -> Bool {
+        guard let normalizedSource = SessionSnapshot.normalizedSupportedSource(source) else { return false }
+        let lowercasedPath = path.lowercased()
+
+        switch normalizedSource {
+        case "traecli":
+            return lowercasedPath.hasSuffix("/coco")
+                || lowercasedPath.hasSuffix("/traecli")
+                || lowercasedPath.contains("/coco ")
+                || lowercasedPath.contains("/traecli ")
+        case "codex":
+            return lowercasedPath.hasSuffix("/codex") || lowercasedPath.contains("/codex ")
+        case "claude":
+            return lowercasedPath.hasSuffix("/claude") || lowercasedPath.contains("/claude ")
+        case "qwen":
+            return lowercasedPath.hasSuffix("/qwen")
+                || lowercasedPath.hasSuffix("/qwen-code")
+                || lowercasedPath.contains("/qwen ")
+                || lowercasedPath.contains("/qwen-code ")
+        case "gemini":
+            return lowercasedPath.hasSuffix("/gemini") || lowercasedPath.contains("/gemini ")
+        default:
+            return lowercasedPath.contains("/\(normalizedSource)")
+        }
+    }
+
+    public static func resolvedTrackedPID(
+        immediateParentPID: Int32,
+        source: String?,
+        ancestry: [(pid: Int32, executablePath: String?)]
+    ) -> Int32 {
+        guard immediateParentPID > 0 else { return immediateParentPID }
+
+        if let directMatch = ancestry.first(where: {
+            sourceMatchesExecutablePath($0.executablePath ?? "", source: source)
+        }) {
+            return directMatch.pid
+        }
+
+        return immediateParentPID
+    }
+
+    /// Walk the process ancestry and return the first known CLI source whose binary
+    /// appears along the chain. Used when a hook event reaches the bridge without a
+    /// `--source` tag (e.g. omo plugin firing Claude hooks from inside OpenCode), so
+    /// we can recover the real source instead of letting the event default to Claude.
+    public static func inferSource(ancestry: [(pid: Int32, executablePath: String?)]) -> String? {
+        let candidates = SessionSnapshot.supportedSources.sorted()
+        for entry in ancestry {
+            guard let path = entry.executablePath, !path.isEmpty else { continue }
+            for source in candidates {
+                if sourceMatchesExecutablePath(path, source: source) {
+                    return source
+                }
+            }
+        }
+        return nil
+    }
+}
+
+public enum AgentStatus: Sendable {
     case idle
     case processing
     case running
@@ -12,6 +73,7 @@ public struct HookEvent {
     public let eventName: String
     public let sessionId: String?
     public let toolName: String?
+    public let toolUseId: String?
     public let agentId: String?
     public let toolInput: [String: Any]?
     public let rawJSON: [String: Any]  // Full payload for event-specific fields
@@ -32,6 +94,8 @@ public struct HookEvent {
         }
         self.toolName = HookEvent.firstString(in: json, keys: ["tool_name", "toolName", "tool", "name"])
             ?? HookEvent.firstString(inNestedDictionary: json, containerKeys: ["tool", "payload", "data"], keys: ["name", "tool_name", "toolName"])
+        self.toolUseId = HookEvent.firstString(in: json, keys: ["tool_use_id", "toolUseId"])
+            ?? HookEvent.firstString(inNestedDictionary: json, containerKeys: ["tool", "tool_use", "toolUse", "payload", "data"], keys: ["id", "tool_use_id", "toolUseId"])
         self.toolInput = HookEvent.firstDictionary(in: json, keys: ["tool_input", "toolInput", "input", "arguments", "args", "params"])
             ?? HookEvent.firstDictionary(inNestedDictionary: json, containerKeys: ["tool", "payload", "data"], keys: ["input", "tool_input", "toolInput", "arguments", "args", "params"])
         self.agentId = json["agent_id"] as? String
@@ -151,7 +215,7 @@ public struct HookEvent {
     }
 }
 
-public struct SubagentState {
+public struct SubagentState: Sendable {
     public let agentId: String
     public let agentType: String
     public var status: AgentStatus = .running
@@ -166,7 +230,7 @@ public struct SubagentState {
     }
 }
 
-public struct ToolHistoryEntry: Identifiable {
+public struct ToolHistoryEntry: Identifiable, Sendable {
     public let id = UUID()
     public let tool: String
     public let description: String?
@@ -183,7 +247,7 @@ public struct ToolHistoryEntry: Identifiable {
     }
 }
 
-public struct ChatMessage: Identifiable {
+public struct ChatMessage: Identifiable, Sendable {
     public let id = UUID()
     public let isUser: Bool
     public let text: String

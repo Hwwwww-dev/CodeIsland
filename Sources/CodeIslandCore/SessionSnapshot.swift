@@ -6,7 +6,7 @@ public enum SessionTitleSource: String, Sendable, Codable {
     case claudeAiTitle
 }
 
-public struct SessionSnapshot {
+public struct SessionSnapshot: Sendable {
     public static let customCLIConfigsKey = "custom_cli_configs_v1"
 
     public static let supportedSources: Set<String> = [
@@ -16,6 +16,7 @@ public struct SessionSnapshot {
         "cursor",
         "trae",
         "traecn",
+        "traecli",
         "copilot",
         "qoder",
         "droid",
@@ -27,6 +28,8 @@ public struct SessionSnapshot {
         "workbuddy",
         "hermes",
         "qwen",
+        "kimi",
+        "pi",
     ]
 
     public var status: AgentStatus = .idle
@@ -41,6 +44,10 @@ public struct SessionSnapshot {
     public var startTime: Date = Date()
     public var lastUserPrompt: String?
     public var lastAssistantMessage: String?
+    /// Absolute path to the JSONL transcript currently backing this session. Populated
+    /// by hooks (`transcript_path` field) and by filesystem discovery, consumed by the
+    /// JSONLTailer for incremental streaming of the latest assistant reply.
+    public var transcriptPath: String?
     /// Recent chat messages (max 3) for preview
     public var recentMessages: [ChatMessage] = []
     // Terminal info for window activation
@@ -78,10 +85,20 @@ public struct SessionSnapshot {
         let aliases: [String: String] = [
             "factory": "droid",
             "ag": "antigravity",
+            "anti-gravity": "antigravity",
+            "anti gravity": "antigravity",
             "work-buddy": "workbuddy",
+            "work body": "workbuddy",
+            "work-body": "workbuddy",
+            "workbody": "workbuddy",
             "hermes-agent": "hermes",
+            "hermes-agents": "hermes",
+            "hermes agent": "hermes",
+            "hermes agents": "hermes",
             "qwen-code": "qwen",
             "qwencode": "qwen",
+            "kimi-cli": "kimi",
+            "kimicli": "kimi",
             "codebuddycn": "codybuddycn",
             "codybuddy-cn": "codybuddycn",
             "step-fun": "stepfun",
@@ -89,6 +106,7 @@ public struct SessionSnapshot {
             "trae-cn": "traecn",
             "trae_cn": "traecn",
             "trae cn": "traecn",
+            "traecli": "traecli",
         ]
         let canonical = aliases[normalized] ?? normalized
         let dynamicSupportedSources = supportedSources.union(loadCustomSources())
@@ -98,9 +116,11 @@ public struct SessionSnapshot {
         if canonical.hasPrefix("workbuddy") { return "workbuddy" }
         if canonical.hasPrefix("hermes") { return "hermes" }
         if canonical.hasPrefix("qwen") { return "qwen" }
+        if canonical.hasPrefix("kimi") { return "kimi" }
         if canonical.hasPrefix("codybuddycn") || canonical.hasPrefix("codebuddycn") { return "codybuddycn" }
         if canonical.hasPrefix("stepfun") { return "stepfun" }
         if canonical.hasPrefix("traecn") { return "traecn" }
+        if canonical.hasPrefix("traecli") { return "traecli" }
         if canonical.hasPrefix("trae") { return "trae" }
         return nil
     }
@@ -236,6 +256,7 @@ public struct SessionSnapshot {
         case "cursor": return "Cursor"
         case "trae": return "Trae"
         case "traecn": return "Trae CN"
+        case "traecli": return "Traecli"
         case "qoder": return "Qoder"
         case "droid": return "Factory"
         case "codebuddy": return "CodeBuddy"
@@ -246,6 +267,8 @@ public struct SessionSnapshot {
         case "workbuddy": return "WorkBuddy"
         case "hermes": return "Hermes"
         case "qwen": return "Qwen Code"
+        case "kimi": return "Kimi Code CLI"
+        case "pi": return "pi"
         default:
             if let customName = Self.loadCustomSourceNames()[source] {
                 return customName
@@ -725,6 +748,11 @@ public func extractMetadata(into sessions: inout [String: SessionSnapshot], sess
     }
     if let mode = event.rawJSON["permission_mode"] as? String {
         sessions[sessionId]?.permissionMode = mode
+    }
+    // Hooks frequently include the absolute transcript path — capture it so the tailer
+    // can attach to live appends without needing a filesystem scan to rediscover it.
+    if let transcriptPath = event.rawJSON["transcript_path"] as? String, !transcriptPath.isEmpty {
+        sessions[sessionId]?.transcriptPath = transcriptPath
     }
     // Terminal info (injected by hook script)
     if let app = event.rawJSON["_term_app"] as? String, !app.isEmpty, app != "unknown" {

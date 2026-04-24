@@ -22,15 +22,21 @@ enum HookFormat {
     case nested
     /// Cursor style: [{command: "..."}]
     case flat
+    /// TraeCli style: YAML managed block in ~/.trae/traecli.yaml
+    case traecli
     /// GitHub Copilot CLI style: [{type, bash, timeoutSec}] with top-level version
     case copilot
+    /// Kimi Code CLI style: TOML [[hooks]] arrays in ~/.kimi/config.toml
+    case kimi
 
     var storageValue: String {
         switch self {
         case .claude: return "claude"
         case .nested: return "nested"
         case .flat: return "flat"
+        case .traecli: return "traecli"
         case .copilot: return "copilot"
+        case .kimi: return "kimi"
         }
     }
 
@@ -39,7 +45,9 @@ enum HookFormat {
         case "claude": self = .claude
         case "nested": self = .nested
         case "flat": self = .flat
+        case "traecli": self = .traecli
         case "copilot": self = .copilot
+        case "kimi": self = .kimi
         default: return nil
         }
     }
@@ -87,6 +95,7 @@ struct ConfigInstaller {
     private static let customCLIConfigsKey = SessionSnapshot.customCLIConfigsKey
     /// Absolute path for external CLI hooks — avoids tilde expansion issues in IDE environments
     private static let bridgeCommand = codeislandDir + "/codeisland-bridge"
+    private static let traecliConfigPath = NSHomeDirectory() + "/.trae/traecli.yaml"
 
     // Legacy paths for migration cleanup (#32)
     private static let legacyBridgePath = NSHomeDirectory() + "/.claude/hooks/codeisland-bridge"
@@ -106,7 +115,6 @@ struct ConfigInstaller {
                 ("PostToolUse", 5, true),
                 ("PostToolUseFailure", 5, true),
                 ("PermissionRequest", 86400, false),
-                ("PermissionDenied", 5, true),
                 ("Stop", 5, true),
                 ("SubagentStart", 5, true),
                 ("SubagentStop", 5, true),
@@ -116,7 +124,6 @@ struct ConfigInstaller {
                 ("PreCompact", 5, true),
             ],
             versionedEvents: [
-                "PermissionDenied": "2.1.89",
                 "PostToolUseFailure": "2.1.89",
             ]
         ),
@@ -140,12 +147,12 @@ struct ConfigInstaller {
             configPath: ".gemini/settings.json", configKey: "hooks",
             format: .nested,
             events: [
-                ("SessionStart", 5000, false),
-                ("SessionEnd", 5000, false),
-                ("BeforeTool", 5000, false),
-                ("AfterTool", 5000, false),
-                ("BeforeAgent", 5000, false),
-                ("AfterAgent", 5000, false),
+                ("SessionStart", 10000, false),
+                ("SessionEnd", 10000, false),
+                ("BeforeTool", 10000, false),
+                ("AfterTool", 10000, false),
+                ("BeforeAgent", 10000, false),
+                ("AfterAgent", 10000, false),
             ]
         ),
         // Cursor
@@ -179,6 +186,13 @@ struct ConfigInstaller {
             configPath: ".trae-cn/hooks.json", configKey: "hooks",
             format: .flat,
             events: defaultEvents(for: .flat)
+        ),
+        // TraeCli
+        CLIConfig(
+            name: "TraeCli", source: "traecli",
+            configPath: ".trae/traecli.yaml", configKey: "hooks",
+            format: .traecli,
+            events: defaultEvents(for: .traecli)
         ),
         // Qoder — Claude Code fork
         CLIConfig(
@@ -270,6 +284,13 @@ struct ConfigInstaller {
                 ("errorOccurred", 5, true),
             ]
         ),
+        // Kimi Code CLI — TOML hooks in ~/.kimi/config.toml
+        CLIConfig(
+            name: "Kimi Code CLI", source: "kimi",
+            configPath: ".kimi/config.toml", configKey: "hooks",
+            format: .kimi,
+            events: defaultEvents(for: .kimi)
+        ),
     ]
 
     static var allCLIs: [CLIConfig] {
@@ -281,7 +302,7 @@ struct ConfigInstaller {
         allCLIs.filter { $0.source != "claude" }
     }
 
-    private static func defaultEvents(for format: HookFormat) -> [(String, Int, Bool)] {
+    static func defaultEvents(for format: HookFormat) -> [(String, Int, Bool)] {
         switch format {
         case .claude:
             return [
@@ -318,6 +339,22 @@ struct ConfigInstaller {
                 ("afterAgentResponse", 5, false),
                 ("stop", 5, false),
             ]
+        case .traecli:
+            return [
+                ("session_start", 5, false),
+                ("session_end", 5, true),
+                ("user_prompt_submit", 5, true),
+                ("pre_tool_use", 5, false),
+                ("post_tool_use", 5, true),
+                ("post_tool_use_failure", 5, true),
+                ("permission_request", 86400, false),
+                ("notification", 86400, false),
+                ("subagent_start", 5, true),
+                ("subagent_stop", 5, true),
+                ("stop", 5, true),
+                ("pre_compact", 5, true),
+                ("post_compact", 5, true),
+            ]
         case .copilot:
             return [
                 ("sessionStart", 5, false),
@@ -326,6 +363,21 @@ struct ConfigInstaller {
                 ("preToolUse", 5, false),
                 ("postToolUse", 5, true),
                 ("errorOccurred", 5, true),
+            ]
+        case .kimi:
+            // Kimi Code CLI limits: max timeout 600, no PermissionRequest event
+            return [
+                ("UserPromptSubmit", 5, true),
+                ("PreToolUse", 5, false),
+                ("PostToolUse", 5, true),
+                ("PostToolUseFailure", 5, true),
+                ("Stop", 5, true),
+                ("SubagentStart", 5, true),
+                ("SubagentStop", 5, true),
+                ("SessionStart", 5, false),
+                ("SessionEnd", 5, true),
+                ("Notification", 600, false),
+                ("PreCompact", 5, true),
             ]
         }
     }
@@ -464,6 +516,8 @@ struct ConfigInstaller {
             guard isEnabled(source: cli.source) else { continue }
             if cli.source == "claude" {
                 if !installClaudeHooks(cli: cli, fm: fm) { ok = false }
+            } else if cli.source == "traecli" {
+                if !installTraecliHooks(fm: fm) { ok = false }
             } else {
                 if !installExternalHooks(cli: cli, fm: fm) { ok = false }
             }
@@ -492,7 +546,11 @@ struct ConfigInstaller {
         try? fm.removeItem(atPath: legacyHookScriptPath)
 
         for cli in allCLIs {
-            uninstallHooks(cli: cli, fm: fm)
+            if cli.source == "traecli" {
+                uninstallTraecliHooks(fm: fm)
+            } else {
+                uninstallHooks(cli: cli, fm: fm)
+            }
         }
 
         uninstallOpencodePlugin(fm: fm)
@@ -508,6 +566,7 @@ struct ConfigInstaller {
     /// Check if a specific CLI's hooks are installed
     static func isInstalled(source: String) -> Bool {
         if source == "opencode" { return isOpencodePluginInstalled(fm: FileManager.default) }
+        if source == "traecli" { return isTraecliHooksInstalled(fm: FileManager.default) }
         guard let cli = allCLIs.first(where: { $0.source == source }) else { return false }
         return isHooksInstalled(for: cli, fm: FileManager.default)
     }
@@ -544,6 +603,8 @@ struct ConfigInstaller {
             guard let cli = allCLIs.first(where: { $0.source == source }) else { return false }
             if cli.source == "claude" {
                 return installClaudeHooks(cli: cli, fm: fm)
+            } else if cli.source == "traecli" {
+                return installTraecliHooks(fm: fm)
             } else {
                 installExternalHooks(cli: cli, fm: fm)
                 if cli.source == "codex" { enableCodexHooksConfig(fm: fm) }
@@ -553,7 +614,11 @@ struct ConfigInstaller {
             if source == "opencode" {
                 uninstallOpencodePlugin(fm: fm)
             } else if let cli = allCLIs.first(where: { $0.source == source }) {
-                uninstallHooks(cli: cli, fm: fm)
+                if cli.source == "traecli" {
+                    uninstallTraecliHooks(fm: fm)
+                } else {
+                    uninstallHooks(cli: cli, fm: fm)
+                }
             }
             return true
         }
@@ -573,6 +638,13 @@ struct ConfigInstaller {
                 ? fm.fileExists(atPath: NSHomeDirectory() + "/.copilot")
                 : fm.fileExists(atPath: cli.dirPath)
             guard dirExists else { continue }
+            if cli.source == "traecli" {
+                if isTraecliHooksInstalled(fm: fm) { continue }
+                if installTraecliHooks(fm: fm) {
+                    repaired.append(cli.name)
+                }
+                continue
+            }
             if isHooksInstalled(for: cli, fm: fm) { continue }
             if cli.source == "claude" {
                 if installClaudeHooks(cli: cli, fm: fm) {
@@ -736,11 +808,14 @@ struct ConfigInstaller {
             try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
         }
 
-        var settings: [String: Any] = [:]
-        if let json = parseJSONFile(at: cli.fullPath, fm: fm) {
-            settings = json
+        // Read raw text (preserved verbatim for minimal-diff write-back).
+        let originalText: String? = fm.contents(atPath: cli.fullPath).flatMap { String(data: $0, encoding: .utf8) }
+        // Refuse to touch unparseable files (#89 — protect user data).
+        if let text = originalText, !text.isEmpty, parseJSONFile(at: cli.fullPath, fm: fm) == nil {
+            return false
         }
 
+        let settings = parseJSONFile(at: cli.fullPath, fm: fm) ?? [:]
         var hooks = settings[cli.configKey] as? [String: Any] ?? [:]
         let events = compatibleEvents(for: cli)
 
@@ -765,18 +840,55 @@ struct ConfigInstaller {
             eventHooks.append(["matcher": "", "hooks": [hookEntry]])
             hooks[event] = eventHooks
         }
-        settings[cli.configKey] = hooks
 
-        guard let data = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) else {
+        return writeJSONWithKey(
+            cli: cli,
+            originalText: originalText,
+            key: cli.configKey,
+            value: hooks,
+            fm: fm
+        )
+    }
+
+    /// Minimal-diff write of a single top-level key, preserving user comments / key order / escaping.
+    /// Creates the file fresh if `originalText` is nil. Returns false on any failure (caller-side #89 guard).
+    private static func writeJSONWithKey(
+        cli: CLIConfig,
+        originalText: String?,
+        key: String,
+        value: Any,
+        fm: FileManager
+    ) -> Bool {
+        let source: String = {
+            if let t = originalText, !t.isEmpty { return t }
+            return "{}\n"
+        }()
+        guard let merged = JSONMinimalEditor.setTopLevelValue(in: source, key: key, value: value) else {
             return false
         }
-        return fm.createFile(atPath: cli.fullPath, contents: data)
+        return fm.createFile(atPath: cli.fullPath, contents: Data(merged.utf8))
     }
 
     // MARK: - External CLIs (use bridge binary directly)
 
     @discardableResult
     private static func installExternalHooks(cli: CLIConfig, fm: FileManager) -> Bool {
+        if cli.format == .kimi {
+            // Kimi: do not create ~/.kimi or config files unless there is already
+            // evidence of an existing Kimi installation/configuration.
+            let rootDir = NSHomeDirectory() + "/.kimi"
+            let sessionsDir = rootDir + "/sessions"
+            let hasKimiPresence =
+                fm.fileExists(atPath: cli.dirPath) ||
+                fm.fileExists(atPath: rootDir) ||
+                fm.fileExists(atPath: sessionsDir)
+            guard hasKimiPresence else { return true }
+            if !fm.fileExists(atPath: cli.dirPath) {
+                try? fm.createDirectory(atPath: cli.dirPath, withIntermediateDirectories: true)
+            }
+            return installKimiHooks(cli: cli, fm: fm)
+        }
+
         if cli.format == .copilot {
             // Copilot: check root ~/.copilot exists, create hooks subdir if needed
             let rootDir = NSHomeDirectory() + "/.copilot"
@@ -788,11 +900,14 @@ struct ConfigInstaller {
             guard fm.fileExists(atPath: cli.dirPath) else { return true } // CLI not installed, skip OK
         }
 
-        var root: [String: Any] = [:]
-        if let json = parseJSONFile(at: cli.fullPath, fm: fm) {
-            root = json
+        // Read raw text for minimal-diff write-back.
+        let originalText: String? = fm.contents(atPath: cli.fullPath).flatMap { String(data: $0, encoding: .utf8) }
+        // Refuse to touch unparseable files (#89 safety guard).
+        if let text = originalText, !text.isEmpty, parseJSONFile(at: cli.fullPath, fm: fm) == nil {
+            return false
         }
 
+        let root = parseJSONFile(at: cli.fullPath, fm: fm) ?? [:]
         var hooks = root[cli.configKey] as? [String: Any] ?? [:]
         // Quote the path in case home directory contains spaces or special characters
         let quotedBridge = bridgeCommand.contains(" ") ? "\"\(bridgeCommand)\"" : bridgeCommand
@@ -806,29 +921,331 @@ struct ConfigInstaller {
             let entry: [String: Any]
             switch cli.format {
             case .claude:
-                entry = ["matcher": "*", "hooks": [["type": "command", "command": baseCommand] as [String: Any]]]
+                // Qwen Code (a Claude fork) reuses this format and NEEDS timeout per entry
+                // — otherwise long-running PermissionRequest hooks hang the agent (#103).
+                entry = ["matcher": "*", "hooks": [["type": "command", "command": baseCommand, "timeout": timeout] as [String: Any]]]
             case .nested:
                 entry = ["hooks": [["type": "command", "command": baseCommand, "timeout": timeout] as [String: Any]]]
             case .flat:
+                entry = ["command": baseCommand]
+            case .traecli:
+                // Treat like flat for custom JSON hook configs; built-in TraeCli uses YAML install path.
                 entry = ["command": baseCommand]
             case .copilot:
                 // Copilot CLI stdin lacks session_id/hook_event_name — pass event name via flag
                 let copilotCommand = "\(baseCommand) --event \(event)"
                 entry = ["type": "command", "bash": copilotCommand, "timeoutSec": timeout]
+            case .kimi:
+                // Handled earlier in the function; should never reach here
+                return false
             }
             eventEntries.append(entry)
             hooks[event] = eventEntries
         }
 
-        root[cli.configKey] = hooks
-        // Copilot CLI requires a top-level "version" field
-        if cli.format == .copilot {
-            root["version"] = 1
+        // Seed file if missing — ensure Copilot's required "version" key lands first so the key-order
+        // for downstream readers stays stable across installs.
+        var seeded = originalText
+        if cli.format == .copilot, (originalText == nil || originalText?.isEmpty == true) {
+            seeded = "{\n  \"version\": 1\n}\n"
+        } else if cli.format == .copilot, root["version"] == nil {
+            // Only insert `version` when the user hasn't set one themselves — don't clobber a
+            // user-bumped schema version in case Copilot ships v2+ in the future.
+            if let t = originalText, let withVer = JSONMinimalEditor.setTopLevelValue(in: t, key: "version", value: 1) {
+                seeded = withVer
+            }
         }
-        guard let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) else {
+
+        return writeJSONWithKey(
+            cli: cli,
+            originalText: seeded,
+            key: cli.configKey,
+            value: hooks,
+            fm: fm
+        )
+    }
+
+    private static func renderManagedTraecliHooks(source: String = "traecli") -> String {
+        let quotedBridge = bridgeCommand.contains(" ") ? "\"\(bridgeCommand)\"" : bridgeCommand
+        let escapedCommand = "\(quotedBridge) --source \(source)".replacingOccurrences(of: "'", with: "''")
+
+        let events = defaultEvents(for: .traecli)
+        let timeout = events.map { $0.1 }.max() ?? 5
+
+        var lines: [String] = ["  - type: command"]
+        lines.append("    command: '\(escapedCommand)'")
+        lines.append("    timeout: '\(timeout)s'")
+        lines.append("    matchers:")
+        for (event, _, _) in events {
+            lines.append("      - event: \(event)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func isTraecliCommandListItemStart(_ trimmed: String) -> Bool {
+        // Accept exact "- type: command" and variants with trailing whitespace/comments.
+        let prefix = "- type: command"
+        guard trimmed.hasPrefix(prefix) else { return false }
+        let rest = trimmed.dropFirst(prefix.count)
+        if rest.isEmpty { return true }
+        guard let c = rest.first else { return true }
+        return c == " " || c == "\t" || c == "#"
+    }
+
+    private static func parseYAMLScalar(_ raw: String) -> String {
+        // Handles simple single-line YAML scalars used by TraeCli config.
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("'") && s.hasSuffix("'") && s.count >= 2 {
+            let inner = String(s.dropFirst().dropLast())
+            return inner.replacingOccurrences(of: "''", with: "'")
+        }
+        if s.hasPrefix("\"") && s.hasSuffix("\"") && s.count >= 2 {
+            let inner = String(s.dropFirst().dropLast())
+            // Minimal escape handling
+            return inner
+                .replacingOccurrences(of: "\\\\", with: "\\")
+                .replacingOccurrences(of: "\\\"", with: "\"")
+        }
+        return s
+    }
+
+    private static func extractTraecliCommand(from blockLines: ArraySlice<String>) -> String? {
+        for line in blockLines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("command:") else { continue }
+            let raw = trimmed.dropFirst("command:".count)
+            return parseYAMLScalar(String(raw))
+        }
+        return nil
+    }
+
+    private static func normalizeTraecliCommandForCompare(_ command: String) -> String {
+        var s = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Collapse whitespace
+        s = s.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        guard !s.isEmpty else { return s }
+
+        // Parse first token, allowing quoted path with spaces.
+        var first = ""
+        var rest = ""
+        if s.hasPrefix("\"") {
+            let afterQuote = s.index(after: s.startIndex)
+            if let endQuote = s[afterQuote...].firstIndex(of: "\"") {
+                first = String(s[afterQuote..<endQuote])
+                rest = String(s[s.index(after: endQuote)...])
+            } else {
+                first = s
+                rest = ""
+            }
+        } else {
+            if let space = s.firstIndex(of: " ") {
+                first = String(s[..<space])
+                rest = String(s[space...])
+            } else {
+                first = s
+                rest = ""
+            }
+        }
+
+        first = first.trimmingCharacters(in: .whitespaces)
+        rest = rest.trimmingCharacters(in: .whitespaces)
+        if first.hasPrefix("~/") {
+            first = NSHomeDirectory() + "/" + first.dropFirst(2)
+        }
+        // Normalize home prefix
+        let home = NSHomeDirectory()
+        if first.hasPrefix(home + "/") {
+            // Keep absolute; just ensure no double slashes
+            first = first.replacingOccurrences(of: "//", with: "/")
+        }
+        if !rest.isEmpty {
+            rest = rest.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            return "\(first) \(rest)"
+        }
+        return first
+    }
+
+    private static func expectedTraecliCommandCandidates(source: String) -> [String] {
+        let base = bridgeCommand.contains(" ") ? "\"\(bridgeCommand)\"" : bridgeCommand
+        let abs = "\(bridgeCommand) --source \(source)"
+        let absQuoted = "\"\(bridgeCommand)\" --source \(source)"
+        let tilde = "~/.codeisland/codeisland-bridge --source \(source)"
+        let tildeQuoted = "\"~/.codeisland/codeisland-bridge\" --source \(source)"
+        let actualRendered = "\(base) --source \(source)"
+        return [actualRendered, abs, absQuoted, tilde, tildeQuoted]
+    }
+
+    private static func isOurTraecliInjectedCommand(_ command: String, source: String) -> Bool {
+        let normalized = normalizeTraecliCommandForCompare(command)
+        for candidate in expectedTraecliCommandCandidates(source: source) {
+            if normalized == normalizeTraecliCommandForCompare(candidate) {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func removeManagedTraecliHooks(from contents: String, source: String = "traecli") -> String {
+        let normalized = contents.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
+        var result: [String] = []
+        result.reserveCapacity(lines.count)
+
+        // Legacy compatibility: previous versions could leave extra comment lines around our hook.
+        // We do NOT key off any marker token. Instead, when removing a hook by command match,
+        // we also remove contiguous same-indent comment lines adjacent to that hook.
+
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            // Detect a YAML list item start like "  - type: command" (indent may vary).
+            if isTraecliCommandListItemStart(trimmed) {
+                let indent = line.prefix { $0 == " " }.count
+
+                var j = i + 1
+                while j < lines.count {
+                    let next = lines[j]
+                    let nextTrimmed = next.trimmingCharacters(in: .whitespaces)
+                    let nextIndent = next.prefix { $0 == " " }.count
+
+                    // Next item in the same list (same indent + "- ") => current block ends.
+                    if nextIndent == indent && nextTrimmed.hasPrefix("- ") {
+                        break
+                    }
+                    // Leaving the list block (less indent + non-empty) => current block ends.
+                    if nextIndent < indent && !nextTrimmed.isEmpty {
+                        break
+                    }
+                    j += 1
+                }
+
+                // Remove only if the command matches what we inject.
+                if let cmd = extractTraecliCommand(from: lines[i..<j]), isOurTraecliInjectedCommand(cmd, source: source) {
+                    // Expand deletion to include adjacent same-indent comment lines.
+                    var start = i
+                    while start > 0 {
+                        let prev = lines[start - 1]
+                        let prevTrimmed = prev.trimmingCharacters(in: .whitespaces)
+                        let prevIndent = prev.prefix { $0 == " " }.count
+                        if prevIndent == indent && prevTrimmed.hasPrefix("#") {
+                            start -= 1
+                            continue
+                        }
+                        break
+                    }
+
+                    var end = j
+                    while end < lines.count {
+                        let next = lines[end]
+                        let nextTrimmed = next.trimmingCharacters(in: .whitespaces)
+                        let nextIndent = next.prefix { $0 == " " }.count
+                        if nextIndent == indent && nextTrimmed.hasPrefix("#") {
+                            end += 1
+                            continue
+                        }
+                        break
+                    }
+
+                    // Remove the already-appended leading comment lines (if any).
+                    let removeCount = i - start
+                    if removeCount > 0, result.count >= removeCount {
+                        result.removeLast(removeCount)
+                    }
+                    i = end
+                    continue
+                }
+                result.append(contentsOf: lines[i..<j])
+                i = j
+                continue
+            }
+
+            result.append(line)
+            i += 1
+        }
+
+        while result.count >= 2 && result.suffix(2).allSatisfy({ $0.isEmpty }) {
+            result.removeLast()
+        }
+        return result.joined(separator: "\n")
+    }
+
+    static func mergeTraecliHooks(into contents: String, source: String = "traecli") -> String {
+        let cleaned = removeManagedTraecliHooks(from: contents, source: source)
+        let managedLines = renderManagedTraecliHooks(source: source).components(separatedBy: "\n")
+        var lines = cleaned.components(separatedBy: "\n")
+
+        // Find a top-level hooks key. Handle common scalar/empty forms like "hooks: []" to
+        // avoid producing invalid YAML by appending block items to a flow sequence.
+        if let hooksIndex = lines.firstIndex(where: { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard line == trimmed else { return false } // top-level only
+            return trimmed.range(of: #"^hooks:\s*(\[\s*\]|\{\s*\}|null|~)?\s*(#.*)?$"#, options: .regularExpression) != nil
+        }) {
+            let trimmed = lines[hooksIndex].trimmingCharacters(in: .whitespaces)
+            if trimmed.range(of: #"^hooks:\s*(\[\s*\]|\{\s*\}|null|~)\s*(#.*)?$"#, options: .regularExpression) != nil {
+                lines[hooksIndex] = "hooks:"
+            }
+            lines.insert(contentsOf: managedLines, at: hooksIndex + 1)
+        } else {
+            while !lines.isEmpty && lines.last == "" {
+                lines.removeLast()
+            }
+            if !lines.isEmpty {
+                lines.append("")
+            }
+            lines.append("hooks:")
+            lines.append(contentsOf: managedLines)
+        }
+
+        var merged = lines.joined(separator: "\n")
+        if !merged.hasSuffix("\n") {
+            merged.append("\n")
+        }
+        return merged
+    }
+
+    @discardableResult
+    private static func installTraecliHooks(fm: FileManager) -> Bool {
+        let configDir = (traecliConfigPath as NSString).deletingLastPathComponent
+        guard fm.fileExists(atPath: configDir) else { return true }
+
+        var original = ""
+        if fm.fileExists(atPath: traecliConfigPath) {
+            guard let data = fm.contents(atPath: traecliConfigPath) else { return false }
+            // Never clobber existing file contents if decoding fails.
+            guard let decoded = String(data: data, encoding: .utf8) else { return false }
+            original = decoded
+        }
+
+        let merged = mergeTraecliHooks(into: original)
+        guard let data = merged.data(using: .utf8) else { return false }
+        do {
+            try data.write(to: URL(fileURLWithPath: traecliConfigPath), options: .atomic)
+            return true
+        } catch {
             return false
         }
-        return fm.createFile(atPath: cli.fullPath, contents: data)
+    }
+
+    private static func uninstallTraecliHooks(fm: FileManager) {
+        guard fm.fileExists(atPath: traecliConfigPath),
+              let original = try? String(contentsOfFile: traecliConfigPath, encoding: .utf8)
+        else { return }
+
+        let cleaned = removeManagedTraecliHooks(from: original, source: "traecli")
+        guard cleaned != original, let data = cleaned.data(using: .utf8) else { return }
+        try? data.write(to: URL(fileURLWithPath: traecliConfigPath), options: .atomic)
+    }
+
+    private static func isTraecliHooksInstalled(fm: FileManager) -> Bool {
+        guard fm.fileExists(atPath: traecliConfigPath),
+              let contents = try? String(contentsOfFile: traecliConfigPath, encoding: .utf8)
+        else { return false }
+
+        let normalized = contents.replacingOccurrences(of: "\r\n", with: "\n")
+        return removeManagedTraecliHooks(from: normalized, source: "traecli") != normalized
     }
 
     // MARK: - Codex config.toml
@@ -873,16 +1290,176 @@ struct ConfigInstaller {
         return fm.createFile(atPath: configPath, contents: result.data(using: .utf8))
     }
 
+    // MARK: - Kimi Code CLI (TOML hooks)
+
+    internal static func installKimiHooks(cli: CLIConfig, fm: FileManager) -> Bool {
+        let path = cli.fullPath
+        var contents = ""
+        if fm.fileExists(atPath: path) {
+            contents = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        }
+
+        contents = removeKimiHooks(from: contents)
+        // Comment out legacy scalar `hooks = ...` assignments that conflict with TOML array-of-tables
+        // so they can be restored on uninstall instead of being permanently lost.
+        contents = contents
+            .components(separatedBy: "\n")
+            .map { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("hooks =") {
+                    return "# [CodeIsland] commented out legacy scalar hooks to avoid TOML conflict\n# \(line)"
+                }
+                return line
+            }
+            .joined(separator: "\n")
+
+        let quotedBridge = bridgeCommand.rangeOfCharacter(from: .whitespacesAndNewlines) != nil
+            ? "\"\(bridgeCommand)\""
+            : bridgeCommand
+        let baseCommand = "\(quotedBridge) --source \(cli.source)"
+
+        var hookBlocks: [String] = []
+        for (event, timeout, _) in cli.events {
+            var block = "[[hooks]]\nevent = \"\(event)\"\ncommand = \"\(baseCommand)\"\ntimeout = \(timeout)"
+            if event == "PreToolUse" || event == "PostToolUse" || event == "PostToolUseFailure" {
+                block += "\nmatcher = \".*\""
+            }
+            hookBlocks.append(block)
+        }
+
+        if !contents.isEmpty && !contents.hasSuffix("\n") {
+            contents += "\n"
+        }
+        if !contents.isEmpty {
+            contents += "\n"
+        }
+        contents += hookBlocks.joined(separator: "\n\n") + "\n"
+
+        return fm.createFile(atPath: path, contents: contents.data(using: .utf8))
+    }
+
+    static func removeKimiHooks(from contents: String) -> String {
+        let lines = contents.components(separatedBy: "\n")
+        var result: [String] = []
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            if line.trimmingCharacters(in: .whitespaces) == "[[hooks]]" {
+                var blockLines: [String] = [line]
+                var j = i + 1
+                while j < lines.count {
+                    let nextLine = lines[j]
+                    let trimmed = nextLine.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("[[") || trimmed.hasPrefix("[") {
+                        break
+                    }
+                    blockLines.append(nextLine)
+                    j += 1
+                }
+                let blockText = blockLines.joined(separator: "\n")
+                if !blockText.contains("codeisland-bridge") {
+                    result.append(contentsOf: blockLines)
+                }
+                i = j
+            } else {
+                result.append(line)
+                i += 1
+            }
+        }
+        // Trim trailing blank lines
+        while let last = result.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
+            result.removeLast()
+        }
+        return result.joined(separator: "\n")
+    }
+
+    private static func isKimiHooksInstalled(cli: CLIConfig, fm: FileManager) -> Bool {
+        guard fm.fileExists(atPath: cli.fullPath),
+              let data = fm.contents(atPath: cli.fullPath),
+              let contents = String(data: data, encoding: .utf8) else { return false }
+
+        return cli.events.allSatisfy { (event, _, _) in
+            contentsContainsKimiHook(contents, event: event)
+        }
+    }
+
+    static func contentsContainsKimiHook(_ contents: String, event: String) -> Bool {
+        let lines = contents.components(separatedBy: "\n")
+        var inHookBlock = false
+        var currentEvent: String?
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == "[[hooks]]" {
+                inHookBlock = true
+                currentEvent = nil
+                continue
+            }
+            if inHookBlock && (trimmed.hasPrefix("[[") || trimmed.hasPrefix("[")) {
+                inHookBlock = false
+                currentEvent = nil
+                continue
+            }
+            if inHookBlock {
+                if trimmed.hasPrefix("event = ") {
+                    let val = trimmed.dropFirst("event = ".count)
+                        .trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    currentEvent = val
+                }
+                if currentEvent == event && trimmed.contains("codeisland-bridge") {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     // MARK: - Uninstall (generic)
 
-    private static func uninstallHooks(cli: CLIConfig, fm: FileManager) {
-        guard var root = parseJSONFile(at: cli.fullPath, fm: fm),
-              var hooks = root[cli.configKey] as? [String: Any] else { return }
+    internal static func uninstallHooks(cli: CLIConfig, fm: FileManager) {
+        if cli.format == .kimi {
+            guard fm.fileExists(atPath: cli.fullPath),
+                  let data = fm.contents(atPath: cli.fullPath),
+                  var contents = String(data: data, encoding: .utf8) else { return }
+            contents = removeKimiHooks(from: contents)
+
+            // Restore commented-out legacy scalar hooks
+            let lines = contents.components(separatedBy: "\n")
+            var restored: [String] = []
+            for line in lines {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed == "# [CodeIsland] commented out legacy scalar hooks to avoid TOML conflict" {
+                    continue
+                }
+                if trimmed.range(of: #"^#\s*hooks\s*="#, options: .regularExpression) != nil {
+                    restored.append(line.replacingOccurrences(of: #"^#\s*"#, with: "", options: .regularExpression))
+                } else {
+                    restored.append(line)
+                }
+            }
+            while let last = restored.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
+                restored.removeLast()
+            }
+            contents = restored.joined(separator: "\n")
+
+            fm.createFile(atPath: cli.fullPath, contents: contents.data(using: .utf8))
+            return
+        }
+
+        guard let root = parseJSONFile(at: cli.fullPath, fm: fm),
+              var hooks = root[cli.configKey] as? [String: Any],
+              let originalText = fm.contents(atPath: cli.fullPath).flatMap({ String(data: $0, encoding: .utf8) })
+        else { return }
 
         hooks = removeManagedHookEntries(from: hooks)
 
-        root[cli.configKey] = hooks.isEmpty ? nil : hooks
-        if let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) {
+        let merged: String?
+        if hooks.isEmpty {
+            merged = JSONMinimalEditor.deleteTopLevelKey(in: originalText, key: cli.configKey)
+        } else {
+            merged = JSONMinimalEditor.setTopLevelValue(in: originalText, key: cli.configKey, value: hooks)
+        }
+        if let merged, let data = merged.data(using: .utf8) {
             fm.createFile(atPath: cli.fullPath, contents: data)
         }
     }
@@ -904,6 +1481,10 @@ struct ConfigInstaller {
     }
 
     private static func isHooksInstalled(for cli: CLIConfig, fm: FileManager) -> Bool {
+        if cli.format == .kimi {
+            return isKimiHooksInstalled(cli: cli, fm: fm)
+        }
+
         guard let root = parseJSONFile(at: cli.fullPath, fm: fm),
               let hooks = root[cli.configKey] as? [String: Any] else { return false }
         // Check that ALL required events have our hook installed, not just any one
@@ -1013,6 +1594,81 @@ struct ConfigInstaller {
         return nil
     }
 
+    /// Merge our plugin reference into an opencode.json file's contents.
+    ///
+    /// Returns the new file contents to write, or `nil` when the original contents
+    /// are present but unparseable / not a JSON object — in that case the caller
+    /// MUST NOT overwrite the file (see issue #89). Uses minimal-diff editing so
+    /// user comments, key order, and whitespace are preserved (#105/#106).
+    static func mergeOpencodePluginRef(
+        originalContents: String?,
+        pluginRef: String,
+        identifier: String
+    ) -> String? {
+        // Brand-new file — emit a minimal canonical document.
+        guard let contents = originalContents, !contents.isEmpty else {
+            let config: [String: Any] = [
+                "$schema": "https://opencode.ai/config.json",
+                "plugin": [pluginRef],
+            ]
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: config,
+                options: [.prettyPrinted, .withoutEscapingSlashes]
+            ), var merged = String(data: data, encoding: .utf8) else { return nil }
+            if !merged.hasSuffix("\n") { merged += "\n" }
+            return merged
+        }
+
+        // Verify parseable and dedup plugin entries against the parsed view.
+        let stripped = stripJSONComments(contents)
+        guard let data = stripped.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        var plugins = parsed["plugin"] as? [String] ?? []
+        plugins.removeAll { $0.contains("vibe-island") || $0.contains(identifier) }
+        plugins.append(pluginRef)
+
+        // Replace the plugin array in-place, preserving surrounding text exactly.
+        guard var merged = JSONMinimalEditor.setTopLevelValue(in: contents, key: "plugin", value: plugins) else {
+            return nil
+        }
+        // Add $schema if missing — minimal-diff insertion at end of object.
+        if parsed["$schema"] == nil {
+            guard let withSchema = JSONMinimalEditor.setTopLevelValue(
+                in: merged, key: "$schema", value: "https://opencode.ai/config.json"
+            ) else { return merged }
+            merged = withSchema
+        }
+        return merged
+    }
+
+    /// Remove our plugin reference from an opencode.json file's contents.
+    ///
+    /// Returns the new file contents to write, or `nil` when the file is absent,
+    /// unparseable, or does not currently reference us (nothing to do).
+    static func removeOpencodePluginRef(
+        originalContents: String?,
+        identifier: String
+    ) -> String? {
+        guard let contents = originalContents else { return nil }
+        let stripped = stripJSONComments(contents)
+        guard let data = stripped.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        guard var plugins = parsed["plugin"] as? [String],
+              plugins.contains(where: { $0.contains(identifier) }) else {
+            return nil
+        }
+        plugins.removeAll { $0.contains(identifier) }
+        if plugins.isEmpty {
+            return JSONMinimalEditor.deleteTopLevelKey(in: contents, key: "plugin")
+        }
+        return JSONMinimalEditor.setTopLevelValue(in: contents, key: "plugin", value: plugins)
+    }
+
     @discardableResult
     private static func installOpencodePlugin(fm: FileManager) -> Bool {
         // Only install if opencode config dir exists
@@ -1030,68 +1686,87 @@ struct ConfigInstaller {
 
         // Register in opencode.json only (v1.4+ reads this; config.json causes double-load)
         let pluginRef = "file://\(opencodePluginPath)"
-        var config: [String: Any] = [:]
-        if let data = fm.contents(atPath: opencodeConfigPathNew),
-           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            config = parsed
-        }
-        var plugins = config["plugin"] as? [String] ?? []
-        plugins.removeAll { $0.contains("vibe-island") || $0.contains(HookId.current) }
-        plugins.append(pluginRef)
-        config["plugin"] = plugins
-        if config["$schema"] == nil {
-            config["$schema"] = "https://opencode.ai/config.json"
-        }
-        if let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
-            fm.createFile(atPath: opencodeConfigPathNew, contents: data)
+        let originalContents: String? = fm.contents(atPath: opencodeConfigPathNew)
+            .flatMap { String(data: $0, encoding: .utf8) }
+
+        guard let merged = mergeOpencodePluginRef(
+            originalContents: originalContents,
+            pluginRef: pluginRef,
+            identifier: HookId.current
+        ) else {
+            // Existing config is unparseable — refuse to overwrite user data.
+            // Plugin JS is staged; opencode.json stays untouched until the user fixes it.
+            return false
         }
 
-        // Clean up legacy config.json registration to prevent double-load
-        if let legacyData = fm.contents(atPath: opencodeConfigPath),
-           var legacyConfig = try? JSONSerialization.jsonObject(with: legacyData) as? [String: Any],
-           var legacyPlugins = legacyConfig["plugin"] as? [String],
-           legacyPlugins.contains(where: { $0.contains(HookId.current) }) {
-            legacyPlugins.removeAll { $0.contains("vibe-island") || $0.contains(HookId.current) }
-            legacyConfig["plugin"] = legacyPlugins.isEmpty ? nil : legacyPlugins
-            if let data = try? JSONSerialization.data(withJSONObject: legacyConfig, options: [.prettyPrinted, .sortedKeys]) {
-                fm.createFile(atPath: opencodeConfigPath, contents: data)
-            }
+        if let original = originalContents, !original.isEmpty {
+            backupOpencodeConfig(at: opencodeConfigPathNew, original: original, fm: fm)
+        }
+        fm.createFile(atPath: opencodeConfigPathNew, contents: Data(merged.utf8))
+
+        // Clean up legacy config.json registration to prevent double-load.
+        if let legacyContents = fm.contents(atPath: opencodeConfigPath)
+            .flatMap({ String(data: $0, encoding: .utf8) }),
+           let cleaned = removeOpencodePluginRef(originalContents: legacyContents, identifier: HookId.current) {
+            backupOpencodeConfig(at: opencodeConfigPath, original: legacyContents, fm: fm)
+            fm.createFile(atPath: opencodeConfigPath, contents: Data(cleaned.utf8))
         }
         return true
     }
 
     private static func uninstallOpencodePlugin(fm: FileManager) {
         try? fm.removeItem(atPath: opencodePluginPath)
-        // Remove from opencode.json and legacy config.json
         for configPath in [opencodeConfigPathNew, opencodeConfigPath] {
-            guard let data = fm.contents(atPath: configPath),
-                  var config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  var plugins = config["plugin"] as? [String] else { continue }
-            plugins.removeAll { $0.contains(HookId.current) }
-            config["plugin"] = plugins.isEmpty ? nil : plugins
-            if let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
-                fm.createFile(atPath: configPath, contents: data)
-            }
+            guard let contents = fm.contents(atPath: configPath)
+                .flatMap({ String(data: $0, encoding: .utf8) }),
+                  let cleaned = removeOpencodePluginRef(originalContents: contents, identifier: HookId.current)
+            else { continue }
+            backupOpencodeConfig(at: configPath, original: contents, fm: fm)
+            fm.createFile(atPath: configPath, contents: Data(cleaned.utf8))
         }
     }
 
+    /// Write a timestamped backup next to the original config file the first
+    /// time we mutate it. Subsequent writes skip backup if one already exists
+    /// for the same path to avoid spamming the directory.
+    private static func backupOpencodeConfig(at path: String, original: String, fm: FileManager) {
+        let dir = (path as NSString).deletingLastPathComponent
+        let name = (path as NSString).lastPathComponent
+        // Skip if any previous codeisland backup exists for this file.
+        if let entries = try? fm.contentsOfDirectory(atPath: dir),
+           entries.contains(where: { $0.hasPrefix(name + ".codeisland.bak.") }) {
+            return
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime]
+        let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "")
+        let backupPath = "\(path).codeisland.bak.\(stamp)"
+        fm.createFile(atPath: backupPath, contents: Data(original.utf8))
+    }
+
     /// Current OpenCode plugin version — bump when codeisland-opencode.js changes
-    private static let opencodePluginVersion = "v3"
+    private static let opencodePluginVersion = "v4"
 
     private static func isOpencodePluginInstalled(fm: FileManager) -> Bool {
         guard fm.fileExists(atPath: opencodePluginPath) else { return false }
-        // Check registration in either config file (prefer opencode.json)
-        let registered = [opencodeConfigPathNew, opencodeConfigPath].contains { configPath in
+        // If any config file exists but is unparseable, treat plugin as installed
+        // to avoid a repair loop that would clobber the user's JSON (#89).
+        for configPath in [opencodeConfigPathNew, opencodeConfigPath] {
+            guard fm.fileExists(atPath: configPath) else { continue }
             guard let data = fm.contents(atPath: configPath),
-                  let config = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let plugins = config["plugin"] as? [String] else { return false }
-            return plugins.contains(where: { $0.contains(HookId.current) })
-        }
-        guard registered else { return false }
-        // Check version: if installed plugin is outdated, report as not installed to trigger update
-        if let existing = fm.contents(atPath: opencodePluginPath),
-           let str = String(data: existing, encoding: .utf8) {
-            return str.contains("// version: \(opencodePluginVersion)")
+                  let stripped = String(data: data, encoding: .utf8).map(stripJSONComments),
+                  let parsed = try? JSONSerialization.jsonObject(with: Data(stripped.utf8)) as? [String: Any] else {
+                return true
+            }
+            if let plugins = parsed["plugin"] as? [String],
+               plugins.contains(where: { $0.contains(HookId.current) }) {
+                // Check version; outdated plugin triggers re-install.
+                if let existing = fm.contents(atPath: opencodePluginPath),
+                   let str = String(data: existing, encoding: .utf8) {
+                    return str.contains("// version: \(opencodePluginVersion)")
+                }
+                return false
+            }
         }
         return false
     }

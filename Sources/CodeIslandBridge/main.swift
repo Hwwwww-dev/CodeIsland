@@ -69,6 +69,35 @@ func runCommand(_ path: String, args: [String]) -> String? {
     }
 }
 
+func executablePath(for pid: pid_t) -> String? {
+    var pathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+    let len = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
+    guard len > 0 else { return nil }
+    return String(cString: pathBuffer)
+}
+
+func parentPID(of pid: pid_t) -> pid_t? {
+    var info = proc_bsdinfo()
+    let ret = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
+    guard ret > 0, info.pbi_ppid > 0 else { return nil }
+    return pid_t(info.pbi_ppid)
+}
+
+func buildAncestry(startingAt pid: pid_t, maxDepth: Int = 6) -> [(pid: pid_t, executablePath: String?)] {
+    guard pid > 0 else { return [] }
+    var result: [(pid: pid_t, executablePath: String?)] = []
+    var current: pid_t? = pid
+    var visited = Set<pid_t>()
+
+    while let currentPid = current, currentPid > 0, result.count < maxDepth, !visited.contains(currentPid) {
+        visited.insert(currentPid)
+        result.append((pid: currentPid, executablePath: executablePath(for: currentPid)))
+        current = parentPID(of: currentPid)
+    }
+
+    return result
+}
+
 func debugLog(_ message: String) {
     guard ProcessInfo.processInfo.environment["CODEISLAND_DEBUG"] != nil else { return }
     let ts = ISO8601DateFormatter().string(from: Date())
@@ -89,7 +118,7 @@ func nonEmptyString(_ value: Any?) -> String? {
     return trimmed.isEmpty ? nil : trimmed
 }
 
-func connectSocket(_ path: String) -> Int32? {
+func connectSocket(_ path: String, timeoutMs: Int32 = 3000) -> Int32? {
     let sock = socket(AF_UNIX, SOCK_STREAM, 0)
     guard sock >= 0 else { return nil }
 
@@ -121,7 +150,7 @@ func connectSocket(_ path: String) -> Int32? {
     if result != 0 {
         // Wait for connect to complete (or timeout)
         var pfd = pollfd(fd: sock, events: Int16(POLLOUT), revents: 0)
-        let ready = poll(&pfd, 1, 3000)  // 3 seconds
+        let ready = poll(&pfd, 1, timeoutMs)
         if ready <= 0 {
             close(sock)
             return nil
@@ -208,6 +237,30 @@ guard !input.isEmpty,
     exit(0)
 }
 
+// Generic compatibility: accept common camelCase aliases from third-party forks
+if json["hook_event_name"] == nil {
+    if let event = nonEmptyString(json["hookEventName"]) {
+        json["hook_event_name"] = event
+    } else if let event = nonEmptyString(json["eventName"]) {
+        json["hook_event_name"] = event
+    } else if let event = nonEmptyString(json["event"]) {
+        json["hook_event_name"] = event
+    } else if let event = eventTag {
+        json["hook_event_name"] = event
+    }
+}
+if json["session_id"] == nil {
+    if let sessionId = nonEmptyString(json["sessionId"]) {
+        json["session_id"] = sessionId
+    } else if let payload = json["payload"] as? [String: Any],
+              let sessionId = nonEmptyString(payload["session_id"]) ?? nonEmptyString(payload["sessionId"]) {
+        json["session_id"] = sessionId
+    } else if let data = json["data"] as? [String: Any],
+              let sessionId = nonEmptyString(data["session_id"]) ?? nonEmptyString(data["sessionId"]) {
+        json["session_id"] = sessionId
+    }
+}
+
 // Copilot CLI adaptation: its stdin JSON lacks session_id and hook_event_name.
 // Normalize Copilot's camelCase payload and pass through sessionId when present.
 if sourceTag == "copilot" {
@@ -229,6 +282,14 @@ if sourceTag == "copilot" {
 }
 
 // Validate: must have non-empty session_id
+if json["session_id"] == nil,
+   let source = sourceTag,
+   !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    // Fallback for third-party providers that don't include a stable session ID.
+    // Use source + parent pid so a single CLI process maps to one session.
+    json["session_id"] = "\(source)-ppid-\(getppid())"
+    debugLog("session_id missing, generated fallback id: \(json["session_id"] ?? "")")
+}
 guard let sessionId = json["session_id"] as? String, !sessionId.isEmpty else {
     debugLog("no session_id, dropping")
     exit(0)
@@ -236,16 +297,17 @@ guard let sessionId = json["session_id"] as? String, !sessionId.isEmpty else {
 
 // Event type detection
 let eventName = json["hook_event_name"] as? String ?? ""
-let isPermission = eventName == "PermissionRequest"
-let isQuestion = (eventName == "Notification" || eventName == "afterAgentThought")
+let normalizedEventName = EventNormalizer.normalize(eventName)
+let isPermission = normalizedEventName == "PermissionRequest"
+let isQuestion = (normalizedEventName == "Notification" || eventName == "afterAgentThought")
     && json["question"] as? String != nil
 let isBlocking = isPermission || isQuestion
 
-debugLog("event=\(eventName) session=\(sessionId) permission=\(isPermission) question=\(isQuestion)")
+debugLog("event=\(eventName) normalized=\(normalizedEventName) session=\(sessionId) permission=\(isPermission) question=\(isQuestion)")
 
 // Arm deadline for env collection + connect + send (protects all events).
 // For blocking events, this is disarmed right before the long recvAll wait.
-alarm(8)
+alarm(isBlocking ? 8 : 4)
 
 // --- Deep terminal environment collection ---
 // Terminal app identification (only include when present)
@@ -299,28 +361,47 @@ if let cmuxWorkspace = env["CMUX_WORKSPACE_ID"], !cmuxWorkspace.isEmpty {
     json["_cmux_workspace_id"] = cmuxWorkspace
 }
 
-// Source tag (e.g. "codex" when called via --source codex)
-if let source = sourceTag {
+// Resolve the tracked PID. Some CLIs execute hooks through `sh -c`, so `getppid()` can be a
+// transient shell instead of the long-lived CLI process. Walk a short parent chain and prefer
+// the first executable that matches the provider binary.
+let immediateParentPID = getppid()
+let ancestry = buildAncestry(startingAt: immediateParentPID)
+let coreAncestry = ancestry.map { (pid: Int32($0.pid), executablePath: $0.executablePath) }
+
+// Source tag (e.g. "codex" when called via --source codex). If the caller did not pass
+// one (e.g. the omo OpenCode plugin triggering Claude hooks without --source), infer
+// the real source from the process ancestry so we don't misattribute the event to
+// whichever hook path fired it. See issue #95.
+let effectiveSource = sourceTag ?? CLIProcessResolver.inferSource(ancestry: coreAncestry)
+if let source = effectiveSource {
     json["_source"] = source
 }
 
-// Parent PID — the CLI process that spawned this hook (works for any CLI)
-json["_ppid"] = getppid()
+let resolvedTrackedPID = CLIProcessResolver.resolvedTrackedPID(
+    immediateParentPID: Int32(immediateParentPID),
+    source: effectiveSource,
+    ancestry: coreAncestry
+)
+json["_ppid"] = resolvedTrackedPID
+if resolvedTrackedPID != immediateParentPID {
+    json["_hook_ppid"] = Int32(immediateParentPID)
+}
 
 // --- Serialize enriched JSON ---
 guard let enriched = try? JSONSerialization.data(withJSONObject: json) else { exit(0) }
 
 // --- Connect to Unix socket ---
-guard let sock = connectSocket(socketPath) else {
+let connectTimeoutMs: Int32 = isBlocking ? 3000 : 1000
+guard let sock = connectSocket(socketPath, timeoutMs: connectTimeoutMs) else {
     debugLog("socket connect failed")
     exit(0)
 }
 
 // Set socket timeouts
-var sendTv = timeval(tv_sec: isBlocking ? 86400 : 3, tv_usec: 0)
+var sendTv = timeval(tv_sec: isBlocking ? 86400 : 1, tv_usec: 0)
 setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &sendTv, socklen_t(MemoryLayout<timeval>.size))
 // Recv timeout: server responds within ms, but allow headroom for main-thread scheduling
-var recvTv = timeval(tv_sec: isBlocking ? 86400 : 3, tv_usec: 0)
+var recvTv = timeval(tv_sec: isBlocking ? 86400 : 1, tv_usec: 0)
 setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &recvTv, socklen_t(MemoryLayout<timeval>.size))
 
 // Send enriched event data

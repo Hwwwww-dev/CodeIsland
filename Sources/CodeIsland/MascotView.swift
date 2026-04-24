@@ -31,7 +31,7 @@ struct MascotView: View {
                 GeminiView(status: status, size: size, animated: animated)
             case "cursor":
                 CursorView(status: status, size: size, animated: animated)
-            case "trae", "traecn":
+            case "trae", "traecn", "traecli":
                 TraeView(status: status, size: size, animated: animated)
             case "copilot":
                 CopilotView(status: status, size: size, animated: animated)
@@ -55,6 +55,8 @@ struct MascotView: View {
                 WorkBuddyView(status: status, size: size, animated: animated)
             case "hermes":
                 HermesView(status: status, size: size, animated: animated)
+            case "kimi":
+                KimiView(status: status, size: size)
             default:
                 ClawdView(status: status, size: size, animated: animated)
             }

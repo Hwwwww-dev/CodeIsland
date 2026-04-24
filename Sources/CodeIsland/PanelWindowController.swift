@@ -226,10 +226,16 @@ class PanelWindowController: NSObject, NSWindowDelegate {
                     self.fullscreenLatch = true
                     self.updateVisibility()
                     self.startFullscreenExitPoller()
-                } else if !self.fullscreenLatch {
+                } else {
+                    // Non-fullscreen space: clear any stale latch immediately so the panel
+                    // doesn't stay hidden for up to 1.5s while the exit poller catches up (#104).
+                    if self.fullscreenLatch {
+                        self.fullscreenLatch = false
+                        self.fullscreenPoller?.invalidate()
+                        self.fullscreenPoller = nil
+                    }
                     self.updateVisibility()
                 }
-                // If latch is set but not detected: ignore (poller will handle exit)
             }
         }
 
@@ -434,7 +440,12 @@ class PanelWindowController: NSObject, NSWindowDelegate {
             activeSessionCount: appState.activeSessionCount
         ) else { return }
 
-        autoScreenPoller = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        // Screen-parameter / Space-change / frontmost-app notifications already cover the
+        // common cases. This poller is a fallback for the rare path where a window is
+        // dragged to another display without switching focus — a low cadence is enough
+        // and every tick runs a full CGWindowListCopyWindowInfo, which was measurably
+        // contributing to Energy Impact (#92).
+        autoScreenPoller = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshCurrentScreen()
             }

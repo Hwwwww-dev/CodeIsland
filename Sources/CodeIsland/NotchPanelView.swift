@@ -123,16 +123,21 @@ struct NotchPanelView: View {
                         .padding(.horizontal, 12)
 
                     switch appState.surface {
-                    case .approvalCard:
+                    case .approvalCard(let sid):
                         if let pending = appState.pendingPermission {
+                            let session = appState.sessions[sid]
                             ApprovalBar(
                                 tool: pending.event.toolName ?? "Unknown",
                                 toolInput: pending.event.toolInput,
                                 queuePosition: 1,
                                 queueTotal: appState.permissionQueue.count,
+                                session: session,
+                                sessionId: sid,
+                                appState: appState,
                                 onAllow: { appState.approvePermission(always: false) },
                                 onAlwaysAllow: { appState.approvePermission(always: true) },
-                                onDeny: { appState.denyPermission() }
+                                onDeny: { appState.denyPermission() },
+                                onDismiss: { appState.dismissPermissionPrompt() }
                             )
                             .transition(.blurFade.combined(with: .scale(scale: 0.96, anchor: .top)))
                         }
@@ -359,13 +364,20 @@ private struct CompactLeftWing: View {
     let hasNotch: Bool
     let showToolStatus: Bool
     @AppStorage(SettingsKey.sessionGroupingMode) private var groupingMode = SettingsDefaults.sessionGroupingMode
+    // Bound via @AppStorage so flipping the default mascot in Settings rerenders this view
+    // even when AppState.primarySource wasn't recomputed (no session mutations in flight).
+    @AppStorage(SettingsKey.defaultSource) private var settingsDefaultSource = SettingsDefaults.defaultSource
 
     private var displaySession: SessionSnapshot? {
         let sid = appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
         guard let sid else { return nil }
         return appState.sessions[sid]
     }
-    private var displaySource: String { displaySession?.source ?? appState.primarySource }
+    private var displaySource: String {
+        if let s = displaySession?.source { return s }
+        if appState.totalSessionCount == 0 { return settingsDefaultSource }
+        return appState.primarySource
+    }
     private var displayStatus: AgentStatus { displaySession?.status ?? .idle }
     private var liveTool: String? { displaySession?.currentTool }
     @State private var shownTool: String?
@@ -977,14 +989,185 @@ private struct IdleIndicatorBar: View {
 
 // MARK: - Approval Bar (below notch, auto-expanded)
 
+private struct ApprovalToolDetailView: View {
+    let tool: String
+    let toolInput: [String: Any]?
+    var maxLines: Int? = nil
+
+    private var filePath: String? {
+        toolInput?["file_path"] as? String
+    }
+
+    var body: some View {
+        Group {
+            switch tool {
+            case "Bash":
+                VStack(alignment: .leading, spacing: 2) {
+                    if let cmd = toolInput?["command"] as? String {
+                        HStack(alignment: .top, spacing: 4) {
+                            Text("$")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
+                            Text(cmd)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.85))
+                                .lineLimit(maxLines ?? 3)
+                        }
+                    }
+                    if let desc = toolInput?["description"] as? String, !desc.isEmpty {
+                        Text(desc)
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.55))
+                            .lineLimit(maxLines ?? 2)
+                    }
+                }
+
+            case "Edit":
+                VStack(alignment: .leading, spacing: 3) {
+                    if let fp = filePath {
+                        Text(fp)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                    if let old = toolInput?["old_string"] as? String {
+                        HStack(alignment: .top, spacing: 4) {
+                            Text("−")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color(red: 1.0, green: 0.4, blue: 0.4))
+                            Text(old.prefix(120))
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(Color(red: 1.0, green: 0.4, blue: 0.4).opacity(0.7))
+                                .lineLimit(maxLines ?? 2)
+                        }
+                    }
+                    if let new = toolInput?["new_string"] as? String {
+                        HStack(alignment: .top, spacing: 4) {
+                            Text("+")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
+                            Text(new.prefix(120))
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4).opacity(0.7))
+                                .lineLimit(maxLines ?? 2)
+                        }
+                    }
+                }
+
+            case "Write":
+                VStack(alignment: .leading, spacing: 3) {
+                    if let fp = filePath {
+                        Text(fp)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                    if let content = toolInput?["content"] as? String {
+                        Text(content.prefix(200))
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.6))
+                            .lineLimit(maxLines ?? 4)
+                    }
+                }
+
+            case "Read":
+                VStack(alignment: .leading, spacing: 2) {
+                    if let fp = filePath {
+                        Text(fp)
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                    if let offset = toolInput?["offset"] as? Int,
+                       let limit = toolInput?["limit"] as? Int {
+                        Text("\(L10n.shared["lines"]) \(offset + 1)–\(offset + limit)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.4))
+                            .lineLimit(1)
+                    }
+                }
+
+            case "Grep":
+                VStack(alignment: .leading, spacing: 2) {
+                    if let pattern = toolInput?["pattern"] as? String {
+                        HStack(alignment: .top, spacing: 4) {
+                            Text("/")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color(red: 0.9, green: 0.6, blue: 0.9))
+                            Text(pattern)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Color(red: 0.9, green: 0.6, blue: 0.9).opacity(0.8))
+                                .lineLimit(maxLines ?? 2)
+                        }
+                    }
+                    if let path = toolInput?["path"] as? String {
+                        Text(path)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
+
+            case "Glob":
+                VStack(alignment: .leading, spacing: 2) {
+                    if let pattern = toolInput?["pattern"] as? String {
+                        Text(pattern)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(Color(red: 0.6, green: 0.8, blue: 1.0))
+                            .lineLimit(maxLines ?? 2)
+                    }
+                    if let path = toolInput?["path"] as? String {
+                        Text(path)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
+
+            default:
+                VStack(alignment: .leading, spacing: 2) {
+                    if let input = toolInput {
+                        ForEach(Array(input.keys.sorted().prefix(4)), id: \.self) { key in
+                            let val = input[key].map { "\($0)" } ?? ""
+                            HStack(alignment: .top, spacing: 4) {
+                                Text(key)
+                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(Color(red: 0.6, green: 0.7, blue: 0.9))
+                                Text(String(val.prefix(160)))
+                                    .font(.system(size: 9.5, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.6))
+                                    .lineLimit(maxLines ?? 2)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct ApprovalBar: View {
     let tool: String
     let toolInput: [String: Any]?
     let queuePosition: Int
     let queueTotal: Int
+    let session: SessionSnapshot?
+    let sessionId: String
+    let appState: AppState
     let onAllow: () -> Void
     let onAlwaysAllow: () -> Void
     let onDeny: () -> Void
+    let onDismiss: () -> Void
+
+    // Jump validation state for click-to-jump functionality
+    @State private var failureShakeOffset: CGFloat = 0
+    @State private var jumpValidationTask: Task<Void, Never>?
+    @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
 
     private var fileName: String? {
         guard let fp = toolInput?["file_path"] as? String else { return nil }
@@ -1004,24 +1187,24 @@ private struct ApprovalBar: View {
             // Tool name + file context
             HStack(spacing: 6) {
                 Text("!")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(Color(red: 1.0, green: 0.7, blue: 0.28))
                 Text(tool)
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(Color(red: 1.0, green: 0.7, blue: 0.28))
                 if let server = serverName {
                     Text("(\(server))")
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.system(size: 9))
                         .foregroundStyle(Color(red: 0.6, green: 0.7, blue: 0.9))
                 }
                 if let name = fileName {
                     Text(name)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.white.opacity(0.6))
                 }
                 if queueTotal > 1 {
                     Text("\(queuePosition)/\(queueTotal)")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.white.opacity(0.5))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
@@ -1031,176 +1214,111 @@ private struct ApprovalBar: View {
                 Spacer()
             }
             .padding(.horizontal, 14)
+            .contentShape(Rectangle())
+            .onTapGesture { handleCardClick() }
 
             // Tool-specific detail view
             if toolInput != nil {
-                toolDetailView
+                ApprovalToolDetailView(tool: tool, toolInput: toolInput)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.white.opacity(0.04))
+                    .contentShape(Rectangle())
+                    .onTapGesture { handleCardClick() }
             }
 
             // Pixel-style buttons
             HStack(spacing: 6) {
                 PixelButton(label: L10n.shared["deny"], fg: .white.opacity(0.95), bg: Color(red: 0.45, green: 0.12, blue: 0.12), border: Color(red: 0.7, green: 0.25, blue: 0.25), action: onDeny)
+                PixelButton(label: L10n.shared["dismiss"], fg: .white.opacity(0.95), bg: Color(red: 0.25, green: 0.25, blue: 0.25), border: Color.white.opacity(0.28), action: onDismiss)
                 PixelButton(label: L10n.shared["allow_once"], fg: .white.opacity(0.95), bg: Color(red: 0.16, green: 0.38, blue: 0.18), border: Color(red: 0.28, green: 0.62, blue: 0.32), action: onAllow)
                 PixelButton(label: L10n.shared["always"], fg: .white.opacity(0.95), bg: Color(red: 0.14, green: 0.28, blue: 0.52), border: Color(red: 0.28, green: 0.48, blue: 0.82), action: onAlwaysAllow)
             }
             .padding(.horizontal, 14)
         }
         .padding(.vertical, 10)
+        .offset(x: failureShakeOffset)
+        .onDisappear {
+            jumpValidationTask?.cancel()
+            jumpValidationTask = nil
+        }
     }
 
-    @ViewBuilder
-    private var toolDetailView: some View {
-        switch tool {
-        case "Bash":
-            // Show command as a terminal prompt
-            VStack(alignment: .leading, spacing: 2) {
-                if let cmd = toolInput?["command"] as? String {
-                    HStack(alignment: .top, spacing: 4) {
-                        Text("$")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
-                        Text(cmd)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.85))
-                            .lineLimit(3)
-                    }
-                }
-            }
+    // MARK: - Click-to-jump handling
 
-        case "Edit":
-            // Show diff style: - old / + new
-            VStack(alignment: .leading, spacing: 3) {
-                if let fp = filePath {
-                    Text(fp)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.35))
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
-                if let old = toolInput?["old_string"] as? String {
-                    HStack(alignment: .top, spacing: 4) {
-                        Text("−")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color(red: 1.0, green: 0.4, blue: 0.4))
-                        Text(old.prefix(120))
-                            .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(Color(red: 1.0, green: 0.4, blue: 0.4).opacity(0.7))
-                            .lineLimit(2)
-                    }
-                }
-                if let new = toolInput?["new_string"] as? String {
-                    HStack(alignment: .top, spacing: 4) {
-                        Text("+")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
-                        Text(new.prefix(120))
-                            .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4).opacity(0.7))
-                            .lineLimit(2)
-                    }
-                }
+    /// Handle click on approval card to jump to terminal.
+    /// Logic mirrors SessionCard.handleSessionClick():
+    /// - nil session: play error sound + shake animation
+    /// - remote session: skip (no terminal to jump to)
+    /// - valid local session: activate terminal + optionally auto-collapse
+    private func handleCardClick() {
+        // Session may be nil if removed while card is still visible
+        guard let session = session else {
+            Task { @MainActor in
+                SoundManager.shared.preview("8bit_error")
+                await runJumpFailureShakeAnimation()
             }
+            return
+        }
 
-        case "Write":
-            // Show file path + content preview
-            VStack(alignment: .leading, spacing: 3) {
-                if let fp = filePath {
-                    Text(fp)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.35))
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
-                if let content = toolInput?["content"] as? String {
-                    Text(content.prefix(200))
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.6))
-                        .lineLimit(4)
-                }
-            }
+        // Remote sessions have no local terminal
+        guard !session.isRemote else { return }
 
-        case "Read":
-            // Show file path + line range
-            VStack(alignment: .leading, spacing: 2) {
-                if let fp = filePath {
-                    Text(fp)
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.7))
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
-                if let offset = toolInput?["offset"] as? Int,
-                   let limit = toolInput?["limit"] as? Int {
-                    Text("\(L10n.shared["lines"]) \(offset + 1)–\(offset + limit)")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.4))
-                }
-            }
+        TerminalActivator.activate(session: session, sessionId: sessionId)
 
-        case "Grep":
-            // Show pattern + optional path
-            VStack(alignment: .leading, spacing: 2) {
-                if let pattern = toolInput?["pattern"] as? String {
-                    HStack(alignment: .top, spacing: 4) {
-                        Text("/")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundStyle(Color(red: 0.9, green: 0.6, blue: 0.9))
-                        Text(pattern)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(Color(red: 0.9, green: 0.6, blue: 0.9).opacity(0.8))
-                            .lineLimit(2)
-                    }
-                }
-                if let path = toolInput?["path"] as? String {
-                    Text(path)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.35))
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
-            }
+        guard autoCollapseAfterSessionJump else { return }
 
-        case "Glob":
-            // Show glob pattern
-            VStack(alignment: .leading, spacing: 2) {
-                if let pattern = toolInput?["pattern"] as? String {
-                    Text(pattern)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(Color(red: 0.6, green: 0.8, blue: 1.0))
-                        .lineLimit(2)
-                }
-                if let path = toolInput?["path"] as? String {
-                    Text(path)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.35))
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
-            }
+        // Validate jump: retry 3x with increasing delays (120ms, 320ms, 640ms)
+        // Collapse on success; play error sound + shake on failure
+        jumpValidationTask?.cancel()
+        jumpValidationTask = Task {
+            let delays: [UInt64] = [120_000_000, 320_000_000, 640_000_000]
+            let outcome = await evaluateJumpValidation(
+                delays: delays,
+                checkSucceeded: { await checkJumpSucceeded(session: session) }
+            )
 
-        default:
-            // Generic: show all key-value pairs
-            VStack(alignment: .leading, spacing: 2) {
-                if let input = toolInput {
-                    ForEach(Array(input.keys.sorted().prefix(4)), id: \.self) { key in
-                        let val = input[key].map { "\($0)" } ?? ""
-                        HStack(alignment: .top, spacing: 4) {
-                            Text(key)
-                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Color(red: 0.6, green: 0.7, blue: 0.9))
-                            Text(String(val.prefix(100)))
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.6))
-                                .lineLimit(2)
+            switch outcome {
+            case .success:
+                guard !Task.isCancelled else { return }
+                // Auto-collapse to collapsed surface on successful jump
+                await MainActor.run {
+                    switch appState.surface {
+                    case .approvalCard:
+                        withAnimation(NotchAnimation.close) {
+                            appState.surface = .collapsed
                         }
+                    default:
+                        break
                     }
                 }
+            case .failed:
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    SoundManager.shared.preview("8bit_error")
+                }
+                guard !Task.isCancelled else { return }
+                await runJumpFailureShakeAnimation()
+            case .cancelled:
+                return
             }
         }
+    }
+
+    private func checkJumpSucceeded(session: SessionSnapshot) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let succeeded = TerminalVisibilityDetector.isSessionTabVisible(session)
+                    || TerminalVisibilityDetector.isTerminalFrontmostForSession(session)
+                continuation.resume(returning: succeeded)
+            }
+        }
+    }
+
+    @MainActor
+    private func runJumpFailureShakeAnimation() async {
+        await JumpAnimationHelper.runShake(offset: $failureShakeOffset)
     }
 }
 
@@ -1252,7 +1370,7 @@ private struct QuestionBar: View {
                             .font(.system(size: 8))
                             .foregroundStyle(.white.opacity(0.5))
                         Text((cwd as NSString).lastPathComponent)
-                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(.white.opacity(0.6))
                     }
                     Spacer()
@@ -1277,11 +1395,11 @@ private struct QuestionBar: View {
         // Header with progress
         HStack(spacing: 6) {
             Text("?")
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(cyan)
             if let header = item.payload.header, !header.isEmpty {
                 Text(header)
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(cyan.opacity(0.7))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1)
@@ -1289,13 +1407,13 @@ private struct QuestionBar: View {
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
             Text(item.payload.question)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.white.opacity(0.9))
                 .lineLimit(3)
             Spacer()
             if allQuestions.count > 1 {
                 Text("\(currentQuestionIndex + 1)/\(allQuestions.count)")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.white.opacity(0.5))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1)
@@ -1304,7 +1422,7 @@ private struct QuestionBar: View {
             }
             if queueTotal > 1 {
                 Text("\(queuePosition)/\(queueTotal)")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.white.opacity(0.4))
             }
         }
@@ -1345,7 +1463,7 @@ private struct QuestionBar: View {
                             .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
                         TextField(L10n.shared["type_answer"], text: $otherText)
                             .textFieldStyle(.plain)
-                            .font(.system(size: 10.5, design: .monospaced))
+                            .font(.system(size: 10.5))
                             .foregroundStyle(.white)
                             .focused($otherFocused)
                             .onSubmit {
@@ -1375,7 +1493,7 @@ private struct QuestionBar: View {
                     .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
                 TextField(L10n.shared["type_answer"], text: $textInput)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 10.5, design: .monospaced))
+                    .font(.system(size: 10.5))
                     .foregroundStyle(.white)
                     .focused($isFocused)
                     .onSubmit {
@@ -1510,15 +1628,15 @@ private struct QuestionBar: View {
     private var legacyQuestionContent: some View {
         HStack(spacing: 6) {
             Text("?")
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(cyan)
             Text(question)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.white.opacity(0.9))
                 .lineLimit(3)
             if queueTotal > 1 {
                 Text("\(queuePosition)/\(queueTotal)")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.white.opacity(0.5))
                     .padding(.horizontal, 4)
                     .padding(.vertical, 1)
@@ -1547,7 +1665,7 @@ private struct QuestionBar: View {
                     .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4))
                 TextField(L10n.shared["type_answer"], text: $textInput)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 10.5, design: .monospaced))
+                    .font(.system(size: 10.5))
                     .foregroundStyle(.white)
                     .focused($isFocused)
                     .onSubmit {
@@ -1607,11 +1725,11 @@ private struct MultiSelectRow: View {
                     .frame(width: 14)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label)
-                        .font(.system(size: 10.5, weight: hovering || isChecked ? .semibold : .regular, design: .monospaced))
+                        .font(.system(size: 10.5, weight: hovering || isChecked ? .semibold : .regular))
                         .foregroundStyle(.white.opacity(hovering || isChecked ? 1 : 0.75))
                     if let description, !description.isEmpty {
                         Text(description)
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(.system(size: 9))
                             .foregroundStyle(.white.opacity(0.45))
                             .lineLimit(2)
                     }
@@ -1650,27 +1768,27 @@ private struct OptionRow: View {
             HStack(spacing: 8) {
                 // Selector arrow
                 Text(hovering ? "▸" : " ")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(accent)
                     .frame(width: 10)
                 // Number (or ellipsis for "Other")
                 if index > 0 {
                     Text("\(index).")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(accent.opacity(hovering ? 1 : 0.6))
                 } else {
                     Text("…")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(accent.opacity(hovering ? 1 : 0.6))
                 }
                 // Label + Description
                 VStack(alignment: .leading, spacing: 2) {
                     Text(label)
-                        .font(.system(size: 10.5, weight: hovering ? .semibold : .regular, design: .monospaced))
+                        .font(.system(size: 10.5, weight: hovering ? .semibold : .regular))
                         .foregroundStyle(.white.opacity(hovering ? 1 : 0.75))
                     if let description, !description.isEmpty {
                         Text(description)
-                            .font(.system(size: 9, design: .monospaced))
+                            .font(.system(size: 9))
                             .foregroundStyle(.white.opacity(0.45))
                             .lineLimit(2)
                     }
@@ -1704,7 +1822,7 @@ private struct PixelButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(fg)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 7)
@@ -1768,6 +1886,7 @@ private struct SessionListView: View {
                 ("cursor", "Cursor"),
                 ("trae", "Trae"),
                 ("traecn", "Trae CN"),
+                ("traecli", "Trae CLI"),
                 ("copilot", "Copilot"),
                 ("qoder", "Qoder"),
                 ("droid", "Factory"),
@@ -1777,6 +1896,7 @@ private struct SessionListView: View {
                 ("workbuddy", "WorkBuddy"),
                 ("hermes", "Hermes"),
                 ("qwen", "Qwen Code"),
+                ("kimi", "Kimi Code CLI"),
                 ("opencode", "OpenCode"),
             ]
             var result: [(String, String?, [String])] = []
@@ -1826,6 +1946,7 @@ private struct SessionListView: View {
                 ForEach(group.ids, id: \.self) { sessionId in
                     if let session = appState.sessions[sessionId] {
                         SessionCard(
+                            appState: appState,
                             sessionId: sessionId,
                             session: session,
                             isCompletion: onlySessionId != nil
@@ -2005,16 +2126,85 @@ private struct SessionsExpandLink: View {
     }
 }
 
+func shouldTriggerJumpFailureFeedback(_ jumpChecks: [Bool]) -> Bool {
+    !jumpChecks.contains(true)
+}
+
+/// Namespace for jump animation utilities shared between ApprovalBar and SessionCard
+enum JumpAnimationHelper {
+    static let shakeSequence = [8, -8, 6, -6, 3, -3, 0]
+    static let shakeStepDuration: UInt64 = 35_000_000
+
+    @MainActor
+    static func runShake(offset: Binding<CGFloat>) async {
+        for value in shakeSequence {
+            withAnimation(.easeInOut(duration: 0.035)) {
+                offset.wrappedValue = CGFloat(value)
+            }
+            try? await Task.sleep(nanoseconds: shakeStepDuration)
+        }
+    }
+}
+
+enum JumpValidationOutcome: Equatable {
+    case success
+    case failed
+    case cancelled
+}
+
+func evaluateJumpValidation(
+    delays: [UInt64],
+    isCancelled: () -> Bool = { Task.isCancelled },
+    sleep: (UInt64) async -> Void = { try? await Task.sleep(nanoseconds: $0) },
+    checkSucceeded: () async -> Bool
+) async -> JumpValidationOutcome {
+    for delay in delays {
+        await sleep(delay)
+        if isCancelled() { return .cancelled }
+        if await checkSucceeded() { return .success }
+    }
+
+    return isCancelled() ? .cancelled : .failed
+}
+
+enum ApprovalInlineSummary: Equatable {
+    case text(String)
+    case bashCommand(String)
+}
+
+func approvalInlineSummary(tool: String, toolDescription: String?, toolInput: [String: Any]?) -> ApprovalInlineSummary? {
+    let desc = toolDescription?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let desc, !desc.isEmpty {
+        return .text(desc)
+    }
+    if tool == "Bash", let cmd = toolInput?["command"] as? String {
+        let trimmed = cmd.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return .bashCommand(trimmed)
+        }
+    }
+    return nil
+}
+
 private struct SessionCard: View {
+    var appState: AppState
     let sessionId: String
     let session: SessionSnapshot
     var isCompletion: Bool = false
     @State private var hovering = false
+    @State private var failureShakeOffset: CGFloat = 0
+    @State private var jumpValidationTask: Task<Void, Never>?
+    @State private var showApprovalDetails = false
     @AppStorage(SettingsKey.contentFontSize) private var contentFontSize = SettingsDefaults.contentFontSize
     @AppStorage(SettingsKey.aiMessageLines) private var aiMessageLines = SettingsDefaults.aiMessageLines
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
+    @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
     private var fontSize: CGFloat { CGFloat(contentFontSize) }
     private var aiLineLimit: Int? { aiMessageLines > 0 ? aiMessageLines : nil }
+    private var approvalQueueIndex: Int? {
+        appState.permissionQueue.firstIndex { ($0.event.sessionId ?? "default") == sessionId }
+    }
+    private var isActiveApproval: Bool { approvalQueueIndex == 0 }
     private var statusNameColor: Color {
         if session.status == .idle && session.interrupted {
             return Color(red: 1.0, green: 0.45, blue: 0.35)
@@ -2026,10 +2216,34 @@ private struct SessionCard: View {
         }
     }
 
+    private func inlineActionButton(
+        _ label: String,
+        fg: Color,
+        bg: Color,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: max(10, fontSize - 1), weight: .semibold, design: .monospaced))
+                .foregroundStyle(fg)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(bg.opacity(enabled ? 1 : 0.35))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(.white.opacity(enabled ? 0.25 : 0.12), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.55)
+    }
+
     var body: some View {
-        Button {
-            TerminalActivator.activate(session: session, sessionId: sessionId)
-        } label: {
         HStack(alignment: .center, spacing: 8) {
             // Column 1: Character + subagent icons
             VStack(spacing: 3) {
@@ -2085,6 +2299,87 @@ private struct SessionCard: View {
                         }
                         SessionTag(timeAgo(session.startTime))
                         TerminalBadge(session: session)
+                    }
+                }
+
+                // Inline approval controls (when user keeps panel in session list)
+                if session.status == .waitingApproval, let idx = approvalQueueIndex {
+                    let tool = session.currentTool ?? (appState.permissionQueue[idx].event.toolName ?? "Unknown")
+                    let input = appState.permissionQueue[idx].event.toolInput
+                    HStack(spacing: 8) {
+                        Text(String(format: L10n.shared["approval_queue_label"], idx + 1, appState.permissionQueue.count, tool))
+                            .font(.system(size: fontSize, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.65))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 8)
+                        inlineActionButton(
+                            showApprovalDetails ? L10n.shared["approval_details_collapse"] : L10n.shared["approval_details_expand"],
+                            fg: .white,
+                            bg: Color.white.opacity(0.10),
+                            enabled: true,
+                            action: { withAnimation(NotchAnimation.micro) { showApprovalDetails.toggle() } }
+                        )
+                        inlineActionButton(
+                            L10n.shared["allow_once"],
+                            fg: .white,
+                            bg: Color(red: 0.25, green: 0.65, blue: 0.35),
+                            enabled: isActiveApproval,
+                            action: { appState.approvePermission(always: false) }
+                        )
+                        inlineActionButton(
+                            L10n.shared["always"],
+                            fg: .white,
+                            bg: Color(red: 0.25, green: 0.55, blue: 0.85),
+                            enabled: isActiveApproval,
+                            action: { appState.approvePermission(always: true) }
+                        )
+                        inlineActionButton(
+                            L10n.shared["deny"],
+                            fg: .white,
+                            bg: Color(red: 0.85, green: 0.3, blue: 0.3),
+                            enabled: isActiveApproval,
+                            action: { appState.denyPermission() }
+                        )
+                    }
+
+                    // Always show a compact, 1-line summary so the session list has approval context
+                    if let summary = approvalInlineSummary(tool: tool, toolDescription: session.toolDescription, toolInput: input) {
+                        switch summary {
+                        case .text(let s):
+                            Text(s)
+                                .font(.system(size: max(10, fontSize - 1), design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.45))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        case .bashCommand(let cmd):
+                            HStack(alignment: .top, spacing: 4) {
+                                Text("$")
+                                    .font(.system(size: max(10, fontSize - 1), weight: .bold, design: .monospaced))
+                                    .foregroundStyle(Color(red: 0.3, green: 0.85, blue: 0.4).opacity(0.9))
+                                Text(cmd)
+                                    .font(.system(size: max(10, fontSize - 1), design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.55))
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                        }
+                    }
+
+                    // Expanded detail view
+                    if showApprovalDetails {
+                        ApprovalToolDetailView(tool: tool, toolInput: input, maxLines: 6)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.white.opacity(0.05))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                                    )
+                            )
                     }
                 }
 
@@ -2146,10 +2441,68 @@ private struct SessionCard: View {
                 .fill(hovering ? Color.white.opacity(0.10) : Color.white.opacity(0.05))
         )
         .padding(.horizontal, 6)
-        } // end Button label
-        .buttonStyle(.plain)
+        .offset(x: failureShakeOffset)
         .contentShape(Rectangle())
+        .onTapGesture { handleSessionClick() }
         .onHover { h in withAnimation(NotchAnimation.micro) { hovering = h } }
+        .onDisappear {
+            jumpValidationTask?.cancel()
+            jumpValidationTask = nil
+        }
+    }
+
+    private func handleSessionClick() {
+        TerminalActivator.activate(session: session, sessionId: sessionId)
+
+        guard autoCollapseAfterSessionJump, !session.isRemote else { return }
+
+        jumpValidationTask?.cancel()
+        jumpValidationTask = Task {
+            let delays: [UInt64] = [120_000_000, 320_000_000, 640_000_000]
+            let outcome = await evaluateJumpValidation(
+                delays: delays,
+                checkSucceeded: { await checkJumpSucceeded() }
+            )
+
+            switch outcome {
+            case .success:
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    switch appState.surface {
+                    case .sessionList, .completionCard:
+                        withAnimation(NotchAnimation.close) {
+                            appState.surface = .collapsed
+                        }
+                    default:
+                        break
+                    }
+                }
+            case .failed:
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    SoundManager.shared.preview("8bit_error")
+                }
+                guard !Task.isCancelled else { return }
+                await runJumpFailureShakeAnimation()
+            case .cancelled:
+                return
+            }
+        }
+    }
+
+    private func checkJumpSucceeded() async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let succeeded = TerminalVisibilityDetector.isSessionTabVisible(session)
+                    || TerminalVisibilityDetector.isTerminalFrontmostForSession(session)
+                continuation.resume(returning: succeeded)
+            }
+        }
+    }
+
+    @MainActor
+    private func runJumpFailureShakeAnimation() async {
+        await JumpAnimationHelper.runShake(offset: $failureShakeOffset)
     }
 
     private func timeAgo(_ date: Date) -> String {
@@ -2537,6 +2890,7 @@ private let cliIconFiles: [String: String] = [
     "cursor": "cursor",
     "trae": "trae",
     "traecn": "trae",
+    "traecli": "trae",
     "copilot": "copilot",
     "qoder": "qoder",
     "droid": "factory",
@@ -2546,6 +2900,7 @@ private let cliIconFiles: [String: String] = [
     "workbuddy": "workbuddy",
     "hermes": "hermes",
     "qwen": "qwen",
+    "kimi": "kimi",
     "opencode": "opencode",
 ]
 

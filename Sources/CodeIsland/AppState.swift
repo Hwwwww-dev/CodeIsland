@@ -2,6 +2,7 @@ import SwiftUI
 import CoreServices
 import os.log
 import SQLite3
+import CryptoKit
 import CodeIslandCore
 
 private let log = Logger(subsystem: "com.codeisland", category: "AppState")
@@ -23,6 +24,29 @@ final class AppState {
     var activeSessionId: String?
     var permissionQueue: [PermissionRequest] = []
     var questionQueue: [QuestionRequest] = []
+    /// Cache of in-flight PreToolUse records keyed by tool_use_id. Used to correlate
+    /// permission requests back to their originating tool call. See AppState+ToolUseCache.
+    @ObservationIgnored
+    var pendingToolUses: [String: PreToolUseRecord] = [:]
+    /// Records the transcript path currently watched for each session so we only
+    /// reattach when the path actually changes. See AppState+TranscriptTailer.
+    @ObservationIgnored
+    var attachedTranscriptPaths: [String: String] = [:]
+    /// Watches active session transcripts for appended assistant lines. Lazily
+    /// constructed so the delta handler can safely capture `self`.
+    @ObservationIgnored
+    lazy var transcriptTailer: JSONLTailer = JSONLTailer { [weak self] delta in
+        Task { @MainActor in
+            self?.applyTranscriptDelta(delta)
+        }
+    }
+    /// Active JSON-RPC client connected to `codex app-server`, or nil when
+    /// Codex Desktop isn't running. See AppState+CodexAppServer.
+    @ObservationIgnored
+    var codexAppServerClient: CodexAppServerClient?
+    /// NSWorkspace launch/terminate observers tracking Codex Desktop.
+    @ObservationIgnored
+    var codexAppServerObservers: [NSObjectProtocol]?
 
     /// Computed: first item in permission queue (backward compat for UI reads)
     var pendingPermission: PermissionRequest? { permissionQueue.first }
@@ -65,6 +89,14 @@ final class AppState {
         }
     }
     private var modelReadRetryAt: [String: Date] = [:]
+
+    private var dismissedPermissionSessionIds: Set<String> = []
+    private func nextVisiblePermissionIndex() -> Int? {
+        permissionQueue.firstIndex { request in
+            let sid = request.event.sessionId ?? "default"
+            return !dismissedPermissionSessionIds.contains(sid)
+        }
+    }
 
     var rotatingSessionId: String?
     var rotatingSession: SessionSnapshot? {
@@ -220,6 +252,10 @@ final class AppState {
                 removeSession(key)
             }
         }
+
+        // 5. Reclaim memory for abandoned tool_use_id cache entries.
+        prunePendingToolUses()
+
         refreshDerivedState()
     }
 
@@ -232,6 +268,12 @@ final class AppState {
 
     private func resolvedSessionProcessIdentity(for sessionId: String) -> ProcessIdentity? {
         guard let process = currentSessionProcessIdentity(for: sessionId) else { return nil }
+        if let resolved = Self.trackedProcessIdentity(for: process.pid, source: sessions[sessionId]?.source) {
+            if resolved != process {
+                setSessionProcessIdentity(resolved, for: sessionId)
+            }
+            return resolved
+        }
         if process.startTime != nil { return process }
         guard let refreshed = Self.liveProcessIdentity(for: process.pid) else { return process }
         setSessionProcessIdentity(refreshed, for: sessionId)
@@ -259,6 +301,42 @@ final class AppState {
         guard process.pid > 0, kill(process.pid, 0) == 0 else { return false }
         guard let expectedStart = process.startTime else { return true }
         return getProcessStartTime(process.pid) == expectedStart
+    }
+
+    private nonisolated static func trackedProcessIdentity(for pid: pid_t, source: String?) -> ProcessIdentity? {
+        guard pid > 0 else { return nil }
+
+        var currentPid: pid_t? = pid
+        var visited = Set<pid_t>()
+        var firstLiveProcess: ProcessIdentity?
+
+        for _ in 0..<6 {
+            guard let candidatePid = currentPid,
+                  candidatePid > 0,
+                  !visited.contains(candidatePid),
+                  let process = liveProcessIdentity(for: candidatePid) else {
+                break
+            }
+
+            visited.insert(candidatePid)
+            if firstLiveProcess == nil {
+                firstLiveProcess = process
+            }
+            if let path = executablePath(for: candidatePid),
+               CLIProcessResolver.sourceMatchesExecutablePath(path, source: source) {
+                return process
+            }
+            currentPid = parentPID(for: candidatePid)
+        }
+
+        return firstLiveProcess
+    }
+
+    private nonisolated static func parentPID(for pid: pid_t) -> pid_t? {
+        var info = proc_bsdinfo()
+        let ret = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(MemoryLayout<proc_bsdinfo>.size))
+        guard ret > 0, info.pbi_ppid > 0 else { return nil }
+        return pid_t(info.pbi_ppid)
     }
 
     private nonisolated static func isNativeAppProcess(_ pid: pid_t, source: String) -> Bool {
@@ -413,6 +491,7 @@ final class AppState {
         }
         sessions.removeValue(forKey: sessionId)
         stopMonitor(sessionId)
+        detachTranscriptTailer(sessionId: sessionId)
         exitingSessions.removeValue(forKey: sessionId)
         modelReadRetryAt.removeValue(forKey: sessionId)
         completionQueue.removeAll { $0 == sessionId }
@@ -574,6 +653,7 @@ final class AppState {
         case "cursor":     return findCursorPids(candidatePids: candidatePids)
         case "trae":       return findTraePids(candidatePids: candidatePids)
         case "traecn":     return findTraeCNPids(candidatePids: candidatePids)
+        case "traecli":   return findTraeCliPids(candidatePids: candidatePids)
         case "copilot":    return findCopilotPids(candidatePids: candidatePids)
         case "qoder":      return findQoderPids(candidatePids: candidatePids)
         case "droid":      return findFactoryPids(candidatePids: candidatePids)
@@ -585,6 +665,8 @@ final class AppState {
         case "workbuddy":  return findWorkBuddyPids(candidatePids: candidatePids)
         case "hermes":     return findHermesPids(candidatePids: candidatePids)
         case "qwen":       return findQwenPids(candidatePids: candidatePids)
+        case "kimi":       return findKimiPids(candidatePids: candidatePids)
+        case "pi":         return findPiPids(candidatePids: candidatePids)
         default:           return []
         }
     }
@@ -680,11 +762,27 @@ final class AppState {
     private(set) var totalSessionCount: Int = 0
 
     var currentTool: String? {
+        // When approvals/questions are pending, always reflect the *front of the queue*.
+        // Otherwise a second incoming request can overwrite session.currentTool and make
+        // the first pending item appear to “disappear” in compact UI.
+        if let pending = pendingPermission {
+            return pending.event.toolName
+        }
+        if pendingQuestion != nil {
+            // AskUserQuestion arrives via PermissionRequest tool.
+            return "AskUserQuestion"
+        }
         guard let id = activeSessionId, let s = sessions[id] else { return nil }
         return s.currentTool
     }
 
     var toolDescription: String? {
+        if let pending = pendingPermission {
+            return pending.event.toolDescription
+        }
+        if let q = pendingQuestion {
+            return q.question.question
+        }
         guard let id = activeSessionId, let s = sessions[id] else { return nil }
         return s.toolDescription
     }
@@ -702,11 +800,19 @@ final class AppState {
 
     /// Recompute cached status/source/counts from sessions in a single O(n) pass.
     /// Call after any mutation to `sessions` or session status.
-    private func refreshDerivedState() {
+    func refreshDerivedState() {
         let summary = deriveSessionSummary(from: sessions)
+        // When there are no sessions at all, honor the user-configured default mascot source
+        // instead of the built-in "claude" fallback (#102).
+        let effectiveSource: String
+        if summary.totalSessionCount == 0 {
+            effectiveSource = SettingsManager.shared.defaultSource
+        } else {
+            effectiveSource = summary.primarySource
+        }
         // Only assign when changed (avoids unnecessary @Observable notifications)
         if status != summary.status { status = summary.status }
-        if primarySource != summary.primarySource { primarySource = summary.primarySource }
+        if primarySource != effectiveSource { primarySource = effectiveSource }
         if activeSessionCount != summary.activeSessionCount { activeSessionCount = summary.activeSessionCount }
         if totalSessionCount != summary.totalSessionCount { totalSessionCount = summary.totalSessionCount }
     }
@@ -756,6 +862,14 @@ final class AppState {
         let prevStatus = sessions[sessionId]?.status
         let wasWaiting = prevStatus == .waitingApproval || prevStatus == .waitingQuestion
 
+        // Cache PreToolUse payloads so downstream events sharing tool_use_id can be
+        // correlated, and drain queue entries whose agent already moved on.
+        let permissionCountBefore = permissionQueue.lazy.filter { $0.event.sessionId == sessionId }.count
+        cachePreToolUseIfApplicable(event)
+        resolveToolUseIfCompleted(event)
+        let permissionCountAfter = permissionQueue.lazy.filter { $0.event.sessionId == sessionId }.count
+        let surgicallyDrained = permissionCountAfter < permissionCountBefore
+
         let effects = reduceEvent(sessions: &sessions, event: event, maxHistory: maxHistory)
 
         // Backfill model after metadata extraction. Hooks are inconsistent across providers,
@@ -766,11 +880,18 @@ final class AppState {
 
         // If session was waiting but received an activity event, the question/permission
         // was answered externally (e.g. user replied in terminal). Clear pending items.
+        //
+        // Exception: when resolveToolUseIfCompleted already surgically drained the queue
+        // entry matching this event's tool_use_id and other permission requests for the
+        // same session remain, the surgical drain IS the whole story — skip the blanket
+        // sweep so concurrent in-flight tools stay queued (tested by
+        // testPostToolUseDoesNotAffectUnrelatedQueueEntries).
         if wasWaiting {
             let en = EventNormalizer.normalize(event.eventName)
             // Events that should NOT clear waiting state
             let keepWaiting: Set<String> = ["Notification", "SessionStart", "SessionEnd", "PreCompact"]
-            if !keepWaiting.contains(en) {
+            let skipBlanketDrain = surgicallyDrained && permissionCountAfter > 0
+            if !keepWaiting.contains(en) && !skipBlanketDrain {
                 drainPermissions(forSession: sessionId)
                 drainQuestions(forSession: sessionId)
                 if sessions[sessionId]?.status == .waitingApproval
@@ -797,6 +918,12 @@ final class AppState {
            sessions[sessionId]?.isRemote != true,
            SessionTitleStore.supports(provider: provider) {
             refreshProviderTitle(for: sessionId)
+        }
+
+        // If a hook just supplied (or changed) this session's transcript path, attach
+        // the tailer so the next assistant append shows up in the panel immediately.
+        if sessions[sessionId]?.isRemote != true {
+            attachTranscriptTailerIfNeeded(sessionId: sessionId)
         }
 
         // Handle the "else if activeSessionId == sessionId → mostActive" edge case
@@ -864,6 +991,9 @@ final class AppState {
         extractMetadata(into: &sessions, sessionId: sessionId, event: event)
         tryMonitorSession(sessionId)
 
+        // New incoming permission request means session needs user decision again.
+        dismissedPermissionSessionIds.remove(sessionId)
+
         // Clear any pending questions for THIS session (mutually exclusive within a session)
         drainQuestions(forSession: sessionId)
 
@@ -871,14 +1001,28 @@ final class AppState {
         sessions[sessionId]?.currentTool = event.toolName
         sessions[sessionId]?.toolDescription = event.toolDescription
         sessions[sessionId]?.lastActivity = Date()
+        // Backfill tool name/description from cached PreToolUse when the payload is thin.
+        enrichPermissionRequestFromCache(sessionId: sessionId, event: event)
 
         let request = PermissionRequest(event: event, continuation: continuation)
+
+        // Replay deduplication: if the same tool_use_id is already queued, swap the
+        // continuation in place and deny the previous waiter. Preserves card order.
+        if mergeDuplicatePermissionRequest(request) {
+            refreshDerivedState()
+            return
+        }
+
         permissionQueue.append(request)
 
         // Show UI only if this is the first (or only) queued item
         if permissionQueue.count == 1 {
             activeSessionId = sessionId
-            surface = .approvalCard(sessionId: sessionId)
+            // If user is already browsing the session list, keep them there and
+            // let inline controls handle approval without stealing focus.
+            if surface != .sessionList {
+                surface = .approvalCard(sessionId: sessionId)
+            }
             SoundManager.shared.handleEvent("PermissionRequest")
         }
         refreshDerivedState()
@@ -887,6 +1031,8 @@ final class AppState {
     func approvePermission(always: Bool = false) {
         guard !permissionQueue.isEmpty else { return }
         let pending = permissionQueue.removeFirst()
+        let sessionId = pending.event.sessionId ?? "default"
+        dismissedPermissionSessionIds.remove(sessionId)
         let responseData: Data
         if always {
             let toolName = pending.event.toolName ?? ""
@@ -910,7 +1056,6 @@ final class AppState {
             responseData = Data(response.utf8)
         }
         pending.continuation.resume(returning: responseData)
-        let sessionId = pending.event.sessionId ?? "default"
         sessions[sessionId]?.status = .running
 
         showNextPending()
@@ -920,9 +1065,10 @@ final class AppState {
     func denyPermission() {
         guard !permissionQueue.isEmpty else { return }
         let pending = permissionQueue.removeFirst()
+        let sessionId = pending.event.sessionId ?? "default"
+        dismissedPermissionSessionIds.remove(sessionId)
         let response = #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
         pending.continuation.resume(returning: Data(response.utf8))
-        let sessionId = pending.event.sessionId ?? "default"
         sessions[sessionId]?.status = .idle
         sessions[sessionId]?.currentTool = nil
         sessions[sessionId]?.toolDescription = nil
@@ -932,6 +1078,24 @@ final class AppState {
         }
 
         showNextPending()
+        refreshDerivedState()
+    }
+
+    func dismissPermissionPrompt() {
+        guard let pending = permissionQueue.first else { return }
+
+        let sessionId = pending.event.sessionId ?? "default"
+        dismissedPermissionSessionIds.insert(sessionId)
+
+        if nextVisiblePermissionIndex() != nil {
+            showNextPending()
+        } else {
+            if case .approvalCard = surface {
+                withAnimation(NotchAnimation.close) {
+                    surface = .collapsed
+                }
+            }
+        }
         refreshDerivedState()
     }
 
@@ -1170,6 +1334,7 @@ final class AppState {
 
     /// Drain all queued permissions for a specific session, resuming their continuations with deny
     private func drainPermissions(forSession sessionId: String) {
+        dismissedPermissionSessionIds.remove(sessionId)
         let denyResponse = Data(#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#.utf8)
         permissionQueue.removeAll { item in
             guard item.event.sessionId == sessionId else { return false }
@@ -1214,11 +1379,16 @@ final class AppState {
 
     /// After dequeuing, show next pending item or collapse
     @discardableResult
-    private func showNextPending() -> Bool {
-        if let next = permissionQueue.first {
+    func showNextPending() -> Bool {
+        if let idx = nextVisiblePermissionIndex() {
+            let next = permissionQueue.remove(at: idx)
+            permissionQueue.insert(next, at: 0)
             let sid = next.event.sessionId ?? "default"
             activeSessionId = sid
-            surface = .approvalCard(sessionId: sid)
+            // When the session list is open, keep it open; approvals can be handled inline.
+            if surface != .sessionList {
+                surface = .approvalCard(sessionId: sid)
+            }
             return true
         } else if let next = questionQueue.first {
             let sid = next.event.sessionId ?? "default"
@@ -1634,6 +1804,9 @@ final class AppState {
         if (requestedSources?.contains("opencode") ?? true) && ConfigInstaller.isEnabled(source: "opencode") {
             discovered.append(contentsOf: findActiveOpenCodeSessions(candidatePids: candidatePids))
         }
+        if ConfigInstaller.isEnabled(source: "kimi") {
+            discovered.append(contentsOf: findActiveKimiSessions(candidatePids: candidatePids))
+        }
         return discovered
     }
 
@@ -1649,6 +1822,7 @@ final class AppState {
             ("cursor", "\(home)/.cursor/projects"),
             ("copilot", "\(home)/.copilot/session-state"),
             ("opencode", "\(home)/.local/share/opencode"),
+            ("kimi", "\(home)/.kimi/sessions"),
         ]
         let fm = FileManager.default
         return candidates.compactMap { source, path in
@@ -1764,6 +1938,32 @@ final class AppState {
         return matchedSources.isEmpty ? nil : matchedSources
     }
 
+    /// Update existing session's messages from discovered transcript data.
+    private func backfillSessionMessages(sessionId: String, from info: DiscoveredSession) -> Bool {
+        guard var session = sessions[sessionId], !info.recentMessages.isEmpty else { return false }
+        var mutated = false
+        let messagesChanged = session.recentMessages.count != info.recentMessages.count ||
+            zip(session.recentMessages, info.recentMessages).contains { $0.isUser != $1.isUser || $0.text != $1.text }
+        if messagesChanged {
+            session.recentMessages = info.recentMessages
+            mutated = true
+        }
+        if let lastUser = info.recentMessages.last(where: { $0.isUser }),
+           session.lastUserPrompt != lastUser.text {
+            session.lastUserPrompt = lastUser.text
+            mutated = true
+        }
+        if let lastAssistant = info.recentMessages.last(where: { !$0.isUser }),
+           session.lastAssistantMessage != lastAssistant.text {
+            session.lastAssistantMessage = lastAssistant.text
+            mutated = true
+        }
+        if mutated {
+            sessions[sessionId] = session
+        }
+        return mutated
+    }
+
     /// Merge discovered sessions into current state (skip already-known ones)
     private func integrateDiscovered(_ discovered: [DiscoveredSession]) {
         var didMutate = false
@@ -1787,6 +1987,14 @@ final class AppState {
                         }
                     }
                 }
+                if backfillSessionMessages(sessionId: info.sessionId, from: info) {
+                    didMutate = true
+                }
+                if let path = info.transcriptPath, sessions[info.sessionId]?.transcriptPath != path {
+                    sessions[info.sessionId]?.transcriptPath = path
+                    didMutate = true
+                }
+                attachTranscriptTailerIfNeeded(sessionId: info.sessionId)
                 tryMonitorSession(info.sessionId)
                 refreshProviderTitle(for: info.sessionId, providerSessionId: info.sessionId)
                 continue
@@ -1832,6 +2040,14 @@ final class AppState {
                         }
                     }
                 }
+                if backfillSessionMessages(sessionId: existingKey, from: info) {
+                    didMutate = true
+                }
+                if let path = info.transcriptPath, sessions[existingKey]?.transcriptPath != path {
+                    sessions[existingKey]?.transcriptPath = path
+                    didMutate = true
+                }
+                attachTranscriptTailerIfNeeded(sessionId: existingKey)
                 tryMonitorSession(existingKey)
                 refreshProviderTitle(for: existingKey, providerSessionId: info.sessionId)
                 continue
@@ -1856,9 +2072,11 @@ final class AppState {
             if let last = info.recentMessages.last(where: { !$0.isUser }) {
                 session.lastAssistantMessage = last.text
             }
+            session.transcriptPath = info.transcriptPath
             sessions[info.sessionId] = session
             refreshProviderTitle(for: info.sessionId, providerSessionId: info.sessionId)
             tryMonitorSession(info.sessionId)
+            attachTranscriptTailerIfNeeded(sessionId: info.sessionId)
             didMutate = true
         }
         if didMutate && activeSessionId == nil {
@@ -1912,6 +2130,10 @@ final class AppState {
         let modifiedAt: Date
         let recentMessages: [ChatMessage]
         var source: String = "claude"
+        /// Absolute path to the JSONL transcript this session was discovered from.
+        /// When non-nil and the session is still live, AppState registers a JSONLTailer
+        /// so incremental assistant appends reach the UI without another full scan.
+        var transcriptPath: String? = nil
     }
 
     /// Find running `claude` processes, match to transcript files, extract recent messages
@@ -1970,7 +2192,8 @@ final class AppState {
             guard !seenSessionIds.contains(sessionId) else { continue }
             seenSessionIds.insert(sessionId)
 
-            let (model, messages) = readRecentFromTranscript(path: "\(projectPath)/\(file)")
+            let fullPath = "\(projectPath)/\(file)"
+            let (model, messages) = readRecentFromTranscript(path: fullPath)
 
             results.append(DiscoveredSession(
                 sessionId: sessionId,
@@ -1979,7 +2202,8 @@ final class AppState {
                 model: model,
                 pid: pid,
                 modifiedAt: bestDate,
-                recentMessages: messages
+                recentMessages: messages,
+                transcriptPath: fullPath
             ))
         }
         return results
@@ -2168,6 +2392,28 @@ final class AppState {
         )
     }
 
+    private nonisolated static func findTraeCliPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/opt/homebrew/bin/coco",
+                "/opt/homebrew/bin/traecli",
+                "/usr/local/bin/coco",
+                "/usr/local/bin/traecli",
+                "/.local/bin/coco",
+                "/.local/bin/traecli",
+            ],
+            argSubstrings: [
+                "/opt/homebrew/bin/coco",
+                "/opt/homebrew/bin/traecli",
+                "/usr/local/bin/coco",
+                "/usr/local/bin/traecli",
+                "/.local/bin/coco",
+                "/.local/bin/traecli",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
     private nonisolated static func findAntiGravityPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
         findPids(
             matchingPathSubstrings: [
@@ -2222,6 +2468,169 @@ final class AppState {
             ],
             candidatePids: candidatePids
         )
+    }
+
+    private nonisolated static func findKimiPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/.local/bin/kimi",
+                "/.local/share/uv/tools/kimi-cli/",
+            ],
+            argSubstrings: [
+                "/kimi-cli/",
+                "kimi_cli",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func findPiPids(candidatePids: [pid_t]? = nil) -> [pid_t] {
+        findPids(
+            matchingPathSubstrings: [
+                "/pi-coding-agent/",
+                "/bin/pi",
+            ],
+            argSubstrings: [
+                "pi-coding-agent",
+            ],
+            candidatePids: candidatePids
+        )
+    }
+
+    private nonisolated static func md5Hash(of string: String) -> String {
+        let digest = Insecure.MD5.hash(data: Data(string.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private nonisolated static func findActiveKimiSessions(candidatePids: [pid_t]? = nil) -> [DiscoveredSession] {
+        let kimiPids = findKimiPids(candidatePids: candidatePids)
+        guard !kimiPids.isEmpty else { return [] }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let fm = FileManager.default
+        let sessionsBase = "\(home)/.kimi/sessions"
+        guard fm.fileExists(atPath: sessionsBase) else { return [] }
+
+        var results: [DiscoveredSession] = []
+        var seenSessionIds: Set<String> = []
+
+        for pid in kimiPids {
+            guard let cwd = getCwd(for: pid), !cwd.isEmpty, !isSubagentWorktree(cwd) else { continue }
+            let processStart = getProcessStartTime(pid)
+            let workdirHash = md5Hash(of: cwd)
+            let workdirPath = "\(sessionsBase)/\(workdirHash)"
+            guard fm.fileExists(atPath: workdirPath),
+                  let sessionDirs = try? fm.contentsOfDirectory(atPath: workdirPath) else { continue }
+
+            var bestPath: String?
+            var bestDate = Date.distantPast
+            var bestSessionId: String?
+
+            for sessionId in sessionDirs {
+                let wirePath = "\(workdirPath)/\(sessionId)/wire.jsonl"
+                guard fm.fileExists(atPath: wirePath),
+                      let attrs = try? fm.attributesOfItem(atPath: wirePath),
+                      let modified = attrs[.modificationDate] as? Date,
+                      modified > bestDate else { continue }
+                if let start = processStart, modified < start.addingTimeInterval(-10) {
+                    continue
+                }
+                bestPath = wirePath
+                bestDate = modified
+                bestSessionId = sessionId
+            }
+
+            guard let path = bestPath, let sessionId = bestSessionId else { continue }
+            let freshnessLimit: TimeInterval = processStart != nil ? -300 : -30
+            if bestDate.timeIntervalSinceNow < freshnessLimit { continue }
+
+            let (_, messages) = readRecentFromKimiTranscript(path: path)
+            guard !seenSessionIds.contains(sessionId) else { continue }
+            seenSessionIds.insert(sessionId)
+
+            results.append(DiscoveredSession(
+                sessionId: sessionId,
+                cwd: cwd,
+                tty: nil,
+                model: nil,
+                pid: pid,
+                modifiedAt: bestDate,
+                recentMessages: messages,
+                source: "kimi"
+            ))
+        }
+
+        return results
+    }
+
+    private nonisolated static func readRecentFromKimiTranscript(path: String) -> (String?, [ChatMessage]) {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return (nil, []) }
+        defer { handle.closeFile() }
+
+        let fileSize = handle.seekToEndOfFile()
+        let readSize: UInt64 = min(fileSize, 262_144)
+        handle.seek(toFileOffset: fileSize - readSize)
+        let data = handle.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return (nil, []) }
+
+        var messages: [ChatMessage] = []
+        var previousUserText: String?
+        var previousAssistantText: String = ""
+
+        for line in text.components(separatedBy: "\n") where !line.isEmpty {
+            guard let lineData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let message = json["message"] as? [String: Any],
+                  let type = message["type"] as? String
+            else { continue }
+
+            switch type {
+            case "TurnBegin":
+                if let userText = previousUserText, !userText.isEmpty {
+                    messages.append(ChatMessage(isUser: true, text: userText))
+                    if !previousAssistantText.isEmpty {
+                        messages.append(ChatMessage(isUser: false, text: previousAssistantText))
+                    }
+                }
+                previousUserText = nil
+                previousAssistantText = ""
+                if let payload = message["payload"] as? [String: Any],
+                   let userInput = payload["user_input"] as? [[String: Any]] {
+                    let texts = userInput.compactMap { part -> String? in
+                        guard part["type"] as? String == "text" else { return nil }
+                        return part["text"] as? String
+                    }
+                    previousUserText = texts.joined()
+                }
+            case "ContentPart":
+                if let payload = message["payload"] as? [String: Any],
+                   payload["type"] as? String == "text",
+                   let textContent = payload["text"] as? String {
+                    previousAssistantText += textContent
+                }
+            case "TurnEnd":
+                if let userText = previousUserText, !userText.isEmpty {
+                    messages.append(ChatMessage(isUser: true, text: userText))
+                    if !previousAssistantText.isEmpty {
+                        messages.append(ChatMessage(isUser: false, text: previousAssistantText))
+                    }
+                }
+                previousUserText = nil
+                previousAssistantText = ""
+            default:
+                break
+            }
+        }
+
+        // flush final turn
+        if let userText = previousUserText, !userText.isEmpty {
+            messages.append(ChatMessage(isUser: true, text: userText))
+            if !previousAssistantText.isEmpty {
+                messages.append(ChatMessage(isUser: false, text: previousAssistantText))
+            }
+        }
+
+        return (nil, Array(messages.suffix(3)))
     }
 
     private nonisolated static func findCopilotPids(candidatePids: [pid_t]? = nil) -> [pid_t] {

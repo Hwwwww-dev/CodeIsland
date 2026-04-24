@@ -110,6 +110,7 @@ private struct RemoteHostsPage: View {
     @State private var user = ""
     @State private var port = ""
     @State private var identityFile = ""
+    @State private var authSocket = ""
     @State private var autoConnect = false
 
     var body: some View {
@@ -131,6 +132,8 @@ private struct RemoteHostsPage: View {
                 TextField(l10n["remote_user"], text: $user)
                 TextField(l10n["remote_port"], text: $port)
                 TextField(l10n["remote_identity"], text: $identityFile)
+                TextField(l10n["remote_auth_socket"], text: $authSocket,
+                          prompt: Text(l10n["remote_auth_socket_placeholder"]))
                 Toggle(l10n["remote_auto_connect"], isOn: $autoConnect)
 
                 Button(l10n["remote_add_button"]) {
@@ -144,7 +147,8 @@ private struct RemoteHostsPage: View {
                         user: user.trimmingCharacters(in: .whitespacesAndNewlines),
                         port: Int(port.trimmingCharacters(in: .whitespacesAndNewlines)),
                         identityFile: identityFile.trimmingCharacters(in: .whitespacesAndNewlines),
-                        autoConnect: autoConnect
+                        autoConnect: autoConnect,
+                        authSocket: authSocket.trimmingCharacters(in: .whitespacesAndNewlines)
                     ))
 
                     name = ""
@@ -152,6 +156,7 @@ private struct RemoteHostsPage: View {
                     user = ""
                     port = ""
                     identityFile = ""
+                    authSocket = ""
                     autoConnect = false
                 }
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -293,6 +298,8 @@ private struct GeneralPage: View {
                     Text(l10n["system_language"]).tag("system")
                     Text("English").tag("en")
                     Text("中文").tag("zh")
+                    Text("日本語").tag("ja")
+                    Text("한국어").tag("ko")
                     Text("Türkçe").tag("tr")
                 }
                 Toggle(l10n["launch_at_login"], isOn: $launchAtLogin)
@@ -331,6 +338,7 @@ private struct BehaviorPage: View {
     @AppStorage(SettingsKey.hideWhenNoSession) private var hideWhenNoSession = SettingsDefaults.hideWhenNoSession
     @AppStorage(SettingsKey.smartSuppress) private var smartSuppress = SettingsDefaults.smartSuppress
     @AppStorage(SettingsKey.collapseOnMouseLeave) private var collapseOnMouseLeave = SettingsDefaults.collapseOnMouseLeave
+    @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
     @AppStorage(SettingsKey.hapticOnHover) private var hapticOnHover = SettingsDefaults.hapticOnHover
     @AppStorage(SettingsKey.hapticIntensity) private var hapticIntensity = SettingsDefaults.hapticIntensity
     @AppStorage(SettingsKey.sessionTimeout) private var sessionTimeout = SettingsDefaults.sessionTimeout
@@ -363,6 +371,12 @@ private struct BehaviorPage: View {
                     desc: l10n["collapse_on_mouse_leave_desc"],
                     isOn: $collapseOnMouseLeave,
                     animation: .collapseMouseLeave
+                )
+                BehaviorToggleRow(
+                    title: l10n["auto_collapse_after_session_jump"],
+                    desc: l10n["auto_collapse_after_session_jump_desc"],
+                    isOn: $autoCollapseAfterSessionJump,
+                    animation: .clickJumpCollapse
                 )
                 BehaviorToggleRow(
                     title: l10n["haptic_on_hover"],
@@ -862,6 +876,7 @@ private struct MascotsPage: View {
     @ObservedObject private var l10n = L10n.shared
     @State private var previewStatus: AgentStatus = .processing
     @AppStorage(SettingsKey.mascotSpeed) private var mascotSpeed = SettingsDefaults.mascotSpeed
+    @AppStorage(SettingsKey.defaultSource) private var defaultSource = SettingsDefaults.defaultSource
 
     private let mascotList: [(name: String, source: String, desc: String, color: Color)] = [
         ("Clawd", "claude", "Claude Code", Color(red: 0.871, green: 0.533, blue: 0.427)),
@@ -880,6 +895,7 @@ private struct MascotsPage: View {
         ("WorkBuddy", "workbuddy", "WorkBuddy", Color(red: 0.475, green: 0.380, blue: 0.870)),
         ("Hermes", "hermes", "Hermes", Color(red: 0.424, green: 0.302, blue: 1.0)),
         ("QwenBot", "qwen", "Qwen Code", Color(red: 0.486, green: 0.228, blue: 0.929)),
+        ("KimiBot", "kimi", "Kimi Code CLI", Color(red: 0.29, green: 0.56, blue: 1.0)),
         ("OpBot", "opencode", "OpenCode", Color(red: 0.55, green: 0.55, blue: 0.57)),
     ]
 
@@ -906,6 +922,15 @@ private struct MascotsPage: View {
                     get: { Double(mascotSpeed) },
                     set: { mascotSpeed = Int($0) }
                 ), in: 0...300, step: 25)
+
+                Picker(selection: $defaultSource) {
+                    ForEach(mascotList, id: \.source) { mascot in
+                        Text(mascot.desc).tag(mascot.source)
+                    }
+                } label: {
+                    Text(l10n["default_mascot"])
+                    Text(l10n["default_mascot_desc"])
+                }
             }
 
             Section {
@@ -1310,7 +1335,90 @@ private struct AboutPage: View {
 // MARK: - Behavior Animation Previews
 
 private enum BehaviorAnim {
-    case hideFullscreen, hideNoSession, smartSuppress, collapseMouseLeave, hapticHover
+    case hideFullscreen, hideNoSession, smartSuppress, collapseMouseLeave, clickJumpCollapse, hapticHover
+}
+
+struct ClickJumpCollapsePreviewTimeline {
+    let expand: Double
+    let showClickRing: Bool
+    let ringOpacity: Double
+    let ringRadius: CGFloat
+    let cursorX: CGFloat
+    let cursorY: CGFloat
+    let clickPointY: CGFloat
+    let showSuccessArrow: Bool
+    let successArrowOpacity: Double
+}
+
+func clickJumpCollapsePreviewTimeline(progress: Double) -> ClickJumpCollapsePreviewTimeline {
+    // Wrap to [0,1) so loop seam is identical between end and start.
+    let p = progress >= 1 ? progress.truncatingRemainder(dividingBy: 1) : min(1, max(0, progress))
+
+    let clickPointY: CGFloat = 16 // lowered ~20% vs previous ~8
+
+    // Seam-friendly phases:
+    // [0.00, 0.08): expanded + cursor very fast move in (from offscreen)
+    // [0.08, 0.26): expanded + cursor hover before click
+    // [0.26, 0.32): click ring pulse
+    // [0.32, 0.47): collapse (match mouse-leave collapse speed)
+    // [0.47, 0.62): collapsed hold
+    // [0.62, 0.80): cursor moves fully offscreen
+    // [0.80, 0.93): expand back (match mouse-leave expand speed, after cursor is offscreen)
+    // [0.93, 1.00): fully expanded idle with cursor still offscreen
+    let expand: Double
+    switch p {
+    case ..<0.32:
+        expand = 1.0
+    case ..<0.47:
+        expand = max(0, 1.0 - (p - 0.32) / 0.15)
+    case ..<0.80:
+        expand = 0
+    case ..<0.93:
+        expand = min(1, (p - 0.80) / 0.13)
+    default:
+        expand = 1.0
+    }
+
+    // Cursor path: offscreen -> click point -> offscreen, aligned to mouse-leave move-out timing.
+    let cursorX: CGFloat
+    let cursorY: CGFloat
+    switch p {
+    case ..<0.08:
+        let m = p / 0.08
+        cursorX = CGFloat((1 - m) * 34)
+        cursorY = CGFloat((1 - m) * 28)
+    case ..<0.62:
+        cursorX = 0
+        cursorY = 0
+    case ..<0.80:
+        let m = (p - 0.62) / 0.18
+        cursorX = CGFloat(m * 34)
+        cursorY = CGFloat(m * 28)
+    default:
+        cursorX = 34
+        cursorY = 28
+    }
+
+    let ringWindow = p >= 0.26 && p <= 0.32
+    let ringPhase = ringWindow ? (p - 0.26) / 0.06 : 0
+    let ringOpacity = ringWindow ? sin(ringPhase * .pi) : 0
+    let ringRadius: CGFloat = 4 + CGFloat(ringPhase) * 6
+
+    let arrowWindow = p >= 0.34 && p <= 0.42
+    let arrowPhase = arrowWindow ? (p - 0.34) / 0.08 : 0
+    let arrowOpacity = arrowWindow ? sin(arrowPhase * .pi) : 0
+
+    return ClickJumpCollapsePreviewTimeline(
+        expand: expand,
+        showClickRing: ringWindow,
+        ringOpacity: ringOpacity,
+        ringRadius: ringRadius,
+        cursorX: cursorX,
+        cursorY: cursorY,
+        clickPointY: clickPointY,
+        showSuccessArrow: arrowWindow,
+        successArrowOpacity: arrowOpacity
+    )
 }
 
 private struct BehaviorToggleRow: View {
@@ -1360,6 +1468,7 @@ private struct NotchMiniAnim: View {
         case .hideNoSession:    drawNoSession(c, sz: sz, t: t)
         case .smartSuppress:    drawSuppress(c, sz: sz, t: t)
         case .collapseMouseLeave: drawMouseLeave(c, sz: sz, t: t)
+        case .clickJumpCollapse: drawClickJumpCollapse(c, sz: sz, t: t)
         case .hapticHover:      drawHaptic(c, sz: sz, t: t)
         }
     }
@@ -1521,7 +1630,46 @@ private struct NotchMiniAnim: View {
         }
     }
 
-    // 5) Haptic: cursor enters → notch shakes briefly (vibration effect)
+    // 5) Click jump: panel starts expanded -> cursor clicks with ring -> collapse hold -> seamless loop
+    private func drawClickJumpCollapse(_ c: GraphicsContext, sz: CGSize, t: Double) {
+        let cycle = t.truncatingRemainder(dividingBy: 3.5) / 3.5
+        let timeline = clickJumpCollapsePreviewTimeline(progress: cycle)
+
+        let pw = lerp(28, 64, timeline.expand)
+        let ph = lerp(10, 34, timeline.expand)
+        drawPill(c, sz: sz, w: pw, h: ph, op: 1.0)
+
+        if timeline.showClickRing {
+            let r = timeline.ringRadius
+            let circle = Path(ellipseIn: CGRect(
+                x: sz.width / 2 - r,
+                y: timeline.clickPointY - r / 2,
+                width: r * 2,
+                height: r * 2
+            ))
+            c.stroke(circle, with: .color(.white.opacity(0.45 * timeline.ringOpacity)), lineWidth: 1)
+        }
+
+        if timeline.showSuccessArrow {
+            c.draw(
+                Text("↗").font(.system(size: 10, weight: .bold)).foregroundColor(.green.opacity(0.75 * timeline.successArrowOpacity)),
+                at: CGPoint(x: sz.width / 2 + 13, y: timeline.clickPointY + 10)
+            )
+        }
+
+        let cx = sz.width / 2 + 2 + timeline.cursorX
+        let cy = timeline.clickPointY + timeline.cursorY
+        var arrow = Path()
+        arrow.move(to: CGPoint(x: cx, y: cy))
+        arrow.addLine(to: CGPoint(x: cx, y: cy + 8))
+        arrow.addLine(to: CGPoint(x: cx + 2.5, y: cy + 6))
+        arrow.addLine(to: CGPoint(x: cx + 5.5, y: cy + 6))
+        arrow.closeSubpath()
+        c.fill(arrow, with: .color(.white.opacity(0.9)))
+        c.stroke(arrow, with: .color(.black.opacity(0.4)), lineWidth: 0.5)
+    }
+
+    // 6) Haptic: cursor enters → notch shakes briefly (vibration effect)
     private func drawHaptic(_ c: GraphicsContext, sz: CGSize, t: Double) {
         let cycle = t.truncatingRemainder(dividingBy: 2.5) / 2.5
 
