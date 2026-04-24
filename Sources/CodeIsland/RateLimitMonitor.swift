@@ -24,7 +24,7 @@ struct RateLimitDisplayInfo: Equatable {
             let resetStr = formatRemaining(fiveHourResetAt)
             parts.append("\(pct)%\(resetStr.isEmpty ? "" : " \(resetStr)")")
         }
-        if let pct = sevenDayPercent, pct >= 5 {
+        if let pct = sevenDayPercent {
             let resetStr = formatRemaining(sevenDayResetAt)
             parts.append("\(pct)%\(resetStr.isEmpty ? "" : " \(resetStr)")")
         }
