@@ -76,6 +76,13 @@ struct NotchPanelView: View {
         // move into IdleIndicatorBar only at expand time, so this is a
         // static baseline change, not a hover pre-widen (#52).
         if showIdleIndicator {
+            // At 50% (slider minimum) tuck the panel into the physical notch
+            // silhouette: width = notchW. On notch machines the bar is hidden
+            // by the bezel; on non-notch the panel is fakeNotchWidth wide.
+            // No "in-between leak" where the mascot half-shows below the notch.
+            if collapsedWidthScale <= 50 {
+                return notchW
+            }
             return nw + (compactWingWidth + idleNotchSideClearance) * 2
         }
         if !isActive {
@@ -431,12 +438,17 @@ private struct CompactLeftWing: View {
                 .id(displaySource)
                 .animation(.easeInOut(duration: 0.3), value: displaySource)
 
-            if hasNotch, showToolStatus, let tool = shownTool {
-                Text(tool)
+            if hasNotch, showToolStatus {
+                // Reserve a fixed-width slot so the wing's intrinsic width
+                // does not change between idle (no tool) and processing
+                // (tool name visible) — both states must produce the same
+                // collapsed bar width. Empty slot stays invisible via opacity.
+                Text(shownTool ?? "")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(toolStatusColor(tool))
+                    .foregroundStyle(toolStatusColor(shownTool ?? "default"))
                     .lineLimit(1)
-                    .fixedSize()
+                    .truncationMode(.tail)
+                    .frame(width: 56, alignment: .leading)
             }
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -451,7 +463,6 @@ private struct CompactLeftWing: View {
     @ViewBuilder
     private var expandedContent: some View {
         HStack(spacing: 6) {
-            AppLogoView(size: 36, showBackground: false)
             if appState.sessions.count > 1 {
                 HStack(spacing: 1) {
                     ForEach([("all", "ALL"), ("status", "STA"), ("cli", "CLI")], id: \.0) { tag, label in
@@ -1982,7 +1993,8 @@ private struct SessionListView: View {
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.top, 4)
+        .padding(.bottom, 9)
 
         if needsScroll {
             ThinScrollView(maxHeight: CGFloat(maxVisibleSessions) * 90) {
@@ -1990,8 +2002,8 @@ private struct SessionListView: View {
             }
             .clipShape(
                 UnevenRoundedRectangle(
-                    topLeadingRadius: 0, bottomLeadingRadius: 20,
-                    bottomTrailingRadius: 20, topTrailingRadius: 0,
+                    topLeadingRadius: 0, bottomLeadingRadius: 24,
+                    bottomTrailingRadius: 24, topTrailingRadius: 0,
                     style: .continuous
                 )
             )
@@ -2451,13 +2463,13 @@ private struct SessionCard: View {
             }
             } // end Column 2 VStack
         } // end HStack
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 16)
                 .fill(hovering ? Color.white.opacity(0.10) : Color.white.opacity(0.05))
         )
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 8)
         .offset(x: failureShakeOffset)
         .contentShape(Rectangle())
         .onTapGesture { handleSessionClick() }
