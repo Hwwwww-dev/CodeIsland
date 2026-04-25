@@ -175,10 +175,11 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     // onHover(true). We bypass that entirely by polling NSEvent.mouseLocation
     // on a 20 Hz timer (mouseMoved events are unreliable for a nonactivating
     // panel that can't become key) and driving expansion from cursor
-    // coordinates against the visible island rect.
+    // coordinates against the visible island rect. The timer only runs while
+    // surface == .collapsed; armSessionObservation starts/stops it when
+    // surface changes.
     private var hoverPollingTimer: Timer?
     private var hoverCursorInsideVisibleIsland = false
-    private var hoverExpandTimer: Timer?
     /// Visible island geometry — pushed in by NotchPanelView whenever
     /// panelWidth or notchHeight changes.
     private var visibleIslandWidth: CGFloat = 0
@@ -286,7 +287,8 @@ class PanelWindowController: NSObject, NSWindowDelegate {
 
         // Global mouse-moved monitor — drives collapsed→expanded by polling
         // cursor coordinates, bypassing SwiftUI's stuck onHover hit area.
-        startHoverMouseMonitor()
+        // Only runs while surface == .collapsed.
+        syncHoverMonitor()
 
         // Global click monitor: close panel + repost click when clicking outside
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
@@ -496,6 +498,7 @@ class PanelWindowController: NSObject, NSWindowDelegate {
                 }
                 self.lastObservedActiveSessionCount = activeSessionCount
                 self.updateVisibility()
+                self.syncHoverMonitor()
                 self.armSessionObservation()
             }
         }
@@ -682,13 +685,29 @@ class PanelWindowController: NSObject, NSWindowDelegate {
         visibleIslandHeight = height
     }
 
+    /// Start the polling timer if and only if surface == .collapsed and the
+    /// panel is visible. Idempotent: safe to call from showPanel and from the
+    /// surface-observation onChange.
+    private func syncHoverMonitor() {
+        // panel.isVisible can be false transiently during showPanel /
+        // animations; rely on surface alone here. handleHoverMouseMoved
+        // still guards on panel visibility per tick.
+        if appState.surface == .collapsed {
+            startHoverMouseMonitor()
+        } else {
+            stopHoverMouseMonitor()
+        }
+    }
+
     private func startHoverMouseMonitor() {
         if hoverPollingTimer != nil { return }
         // RunLoop.common is critical: while the mouse is moving, AppKit
         // switches the main run loop to .eventTracking mode and a default-mode
         // timer would never fire — exactly when we need it most.
+        // The closure is invoked on the main run loop; assumeIsolated lets us
+        // call MainActor-isolated methods without a Task hop on every tick.
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.handleHoverMouseMoved()
             }
         }
@@ -699,63 +718,35 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     private func stopHoverMouseMonitor() {
         hoverPollingTimer?.invalidate()
         hoverPollingTimer = nil
-        hoverExpandTimer?.invalidate()
-        hoverExpandTimer = nil
         hoverCursorInsideVisibleIsland = false
     }
 
     @MainActor
     private func handleHoverMouseMoved() {
-        // Only auto-expand from the .collapsed state. Other states are driven
-        // by SwiftUI's .onHover or by event triggers (approval / question).
-        guard let panel = panel, panel.isVisible else { return }
-        guard appState.surface == .collapsed else {
-            // Out of scope — drop any pending expand and keep state consistent.
-            if hoverCursorInsideVisibleIsland || hoverExpandTimer != nil {
-                hoverExpandTimer?.invalidate()
-                hoverExpandTimer = nil
-                hoverCursorInsideVisibleIsland = false
-            }
+        // Defensive: the timer is only started while collapsed, but a state
+        // flip can race with the next tick. Bail without expanding.
+        guard panel?.isVisible == true,
+              appState.surface == .collapsed else {
+            hoverCursorInsideVisibleIsland = false
             return
         }
-        // NOTE: smart-suppress (don't auto-expand when active session's terminal
-        // is foreground) is intentionally NOT checked here. The original
-        // `.onHover` path called `NSApp.delegate as? AppDelegate` which silently
-        // failed under SwiftUI's NSApplicationDelegateAdaptor, so smart-suppress
-        // was effectively never enforced. We mirror that effective behavior
-        // here. If smart-suppress should genuinely take effect, it needs to be
-        // wired up as a separate fix.
-
-        let inside = isMouseInsideVisibleIsland(width: visibleIslandWidth, height: visibleIslandHeight)
+        let inside = isMouseInsideVisibleIsland(
+            width: visibleIslandWidth, height: visibleIslandHeight)
         if inside == hoverCursorInsideVisibleIsland { return }
         hoverCursorInsideVisibleIsland = inside
-
-        if inside {
-            // Cursor entered visible island — schedule expansion.
-            hoverExpandTimer?.invalidate()
-            hoverExpandTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { [weak self] _ in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    // Re-verify: cursor still inside and still collapsed — guards
-                    // against state changes during the delay. smart-suppress is
-                    // intentionally not checked here (see note in handleHoverMouseMoved).
-                    guard self.appState.surface == .collapsed,
-                          self.hoverCursorInsideVisibleIsland,
-                          self.isMouseInsideVisibleIsland(
-                              width: self.visibleIslandWidth,
-                              height: self.visibleIslandHeight) else { return }
-                    self.triggerHoverExpand()
-                }
-            }
-        } else {
-            // Cursor left visible island — cancel pending expansion.
-            hoverExpandTimer?.invalidate()
-            hoverExpandTimer = nil
-        }
+        guard inside else { return }
+        // Edge-triggered: only on outside→inside transition. Expand immediately
+        // (no debounce) — explicit user requirement.
+        triggerHoverExpand()
     }
 
     @MainActor
     private func triggerHoverExpand() {
+        // Smart suppress: don't auto-expand when the active session's terminal
+        // is the foreground app. The user is busy in the terminal — they
+        // didn't ask for a panel. (Default off; opt-in via settings.)
+        if UserDefaults.standard.bool(forKey: SettingsKey.smartSuppress),
+           isActiveTerminalForeground() { return }
         if UserDefaults.standard.bool(forKey: SettingsKey.hapticOnHover) {
             let performer = NSHapticFeedbackManager.defaultPerformer
             let intensity = UserDefaults.standard.integer(forKey: SettingsKey.hapticIntensity)
@@ -800,7 +791,6 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     deinit {
         autoScreenPoller?.invalidate()
         fullscreenPoller?.invalidate()
-        hoverExpandTimer?.invalidate()
         hoverPollingTimer?.invalidate()
         for observer in settingsObservers {
             NotificationCenter.default.removeObserver(observer)

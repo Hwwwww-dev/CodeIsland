@@ -91,7 +91,11 @@ struct SettingsDefaults {
     static let panelHorizontalOffset = 0.0
     static let hideInFullscreen = true
     static let hideWhenNoSession = false
-    static let smartSuppress = true
+    // Historically defaulted to true, but the actual suppress check was
+    // a no-op due to a silently-failing NSApp.delegate cast. The cast is
+    // now fixed (suppress works), so flip the default to false to keep
+    // the previous effective behavior — users who want suppress can opt in.
+    static let smartSuppress = false
     static let collapseOnMouseLeave = true
     static let autoCollapseAfterSessionJump = false
     static let hapticOnHover = false
