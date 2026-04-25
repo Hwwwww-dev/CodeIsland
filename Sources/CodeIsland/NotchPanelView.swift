@@ -573,6 +573,29 @@ private struct CompactRightWing: View {
         }
     }
 
+    /// "active/total" with a fixed-width slot. When active == 0 the active
+    /// digit + slash render at opacity 0 so the total digit lands in the
+    /// same x-position as when active > 0 — no horizontal shift on the
+    /// 0→1 transition. Monospaced font keeps every digit the same width.
+    @ViewBuilder
+    private func sessionCountLabel(size: CGFloat, weight: Font.Weight) -> some View {
+        let active = appState.activeSessionCount
+        let total = appState.totalSessionCount
+        HStack(spacing: 1) {
+            // Placeholder text uses `total` so the slot width matches the
+            // monospaced "total" digit count when nothing is active.
+            Text("\(active > 0 ? active : total)")
+                .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
+                .opacity(active > 0 ? 1 : 0)
+            Text("/")
+                .foregroundStyle(.white.opacity(0.4))
+                .opacity(active > 0 ? 1 : 0)
+            Text("\(total)")
+                .foregroundStyle(.white.opacity(0.9))
+        }
+        .font(.system(size: size, weight: weight, design: .monospaced))
+    }
+
     @ViewBuilder
     private var collapsedContent: some View {
         HStack(spacing: 6) {
@@ -584,33 +607,9 @@ private struct CompactRightWing: View {
             }
 
             if showToolStatus {
-                HStack(spacing: 1) {
-                    let active = appState.activeSessionCount
-                    let total = appState.totalSessionCount
-                    if active > 0 {
-                        Text("\(active)")
-                            .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
-                        Text("/")
-                            .foregroundStyle(.white.opacity(0.4))
-                    }
-                    Text("\(total)")
-                        .foregroundStyle(.white.opacity(0.9))
-                }
-                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                sessionCountLabel(size: 12, weight: .semibold)
             } else {
-                HStack(spacing: 1) {
-                    let active = appState.activeSessionCount
-                    let total = appState.totalSessionCount
-                    if active > 0 {
-                        Text("\(active)")
-                            .foregroundStyle(Color(red: 0.4, green: 1.0, blue: 0.5))
-                        Text("/")
-                            .foregroundStyle(.white.opacity(0.4))
-                    }
-                    Text("\(total)")
-                        .foregroundStyle(.white.opacity(0.9))
-                }
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                sessionCountLabel(size: 13, weight: .bold)
             }
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -880,10 +879,6 @@ private struct IdleIndicatorBar: View {
         compactWingWidth + 8 * wakeProgress + 18 * leftRevealProgress
     }
 
-    private var mascotEmphasis: CGFloat {
-        max(wakeProgress, leftRevealProgress)
-    }
-
     private var shouldAnimateMascot: Bool {
         IdleIndicatorAnimationPolicy.shouldAnimateMascot(
             hovered: hovered,
@@ -911,7 +906,12 @@ private struct IdleIndicatorBar: View {
             // Left: mascot
             HStack(spacing: 6) {
                 MascotView(source: "claude", status: .idle, size: mascotSize, animated: true)
-                    .opacity(0.5 + mascotEmphasis * 0.4)
+                    // Always fully visible. Previously opacity ramped from 0.5
+                    // → 0.9 driven by mascotEmphasis (peaks at morphProgress
+                    // ≈ 0.72), so the mascot only looked "complete" when the
+                    // island was already ~90% expanded. CompactLeftWing's
+                    // mascot is opacity 1 in the collapsed state — match that
+                    // to remove the visual asymmetry.
                     .scaleEffect(
                         x: 1 + wakeProgress * 0.025 + leftRevealProgress * 0.03,
                         y: 1 - leftRevealProgress * 0.018,
