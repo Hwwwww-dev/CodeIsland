@@ -81,6 +81,14 @@ struct NotchPanelView: View {
         }
     }
 
+    /// Push the visible island geometry to the controller so its
+    /// global mouseMoved monitor can hit-test against the correct rect.
+    /// Called from `.onAppear` and `.onChange(of: panelWidth)`.
+    private func reportVisibleIslandSize() {
+        PanelWindowController.current?.reportVisibleIslandSize(
+            width: panelWidth, height: notchHeight)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 0) {
@@ -220,26 +228,38 @@ struct NotchPanelView: View {
                     }
                 }
             }
-            .onAppear { displayedToolStatus = showToolStatus }
+            .onAppear {
+                displayedToolStatus = showToolStatus
+                reportVisibleIslandSize()
+            }
+            .onChange(of: panelWidth) { _, _ in reportVisibleIslandSize() }
             .contentShape(Rectangle())
             .onHover { hovering in
-                // Idle indicator hover — track local idleHovered for compact width AND drive
-                // surface expansion so usage data still surfaces when dormant.
+                // collapsed → expanded is driven by PanelWindowController's
+                // global mouseMoved monitor (see `handleHoverMouseMoved`),
+                // because SwiftUI's hit area for the inner VStack does not
+                // shrink in lock-step with the frame after the close
+                // animation, leaving onHover stuck at true even when the
+                // cursor is outside the visible island. We still use
+                // .onHover here for the OTHER state transitions, where
+                // the hit area matches the visible region:
+                //   - .sessionList → .collapsed (close on mouse leave)
+                //   - .completionCard → .collapsed
+                //   - approvalCard / questionCard: ignored
+                //   - idle indicator hover visual feedback
                 if showIdleIndicator {
                     hoverTimer?.invalidate()
                     hoverTimer = nil
                     isHovered = hovering
                     if hovering {
+                        // Visual feedback only — actual expansion is driven by
+                        // the controller's mouseMoved monitor. We can leave
+                        // idleHovered=true even if the cursor is in SwiftUI's
+                        // stuck hit area but visually outside the island,
+                        // because the indicator's hovered visual is identical
+                        // to the non-hovered one once the bar is collapsed.
                         idleHovered = true
                         refreshUsageMonitors()
-                        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
-                            Task { @MainActor in
-                                guard isHovered else { return }
-                                withAnimation(NotchAnimation.open) {
-                                    appState.surface = .sessionList
-                                }
-                            }
-                        }
                     } else {
                         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: false) { _ in
                             Task { @MainActor in
@@ -274,49 +294,11 @@ struct NotchPanelView: View {
                 }
                 // Respect collapseOnMouseLeave setting
                 if !hovering && !SettingsManager.shared.collapseOnMouseLeave { return }
-                // Smart suppress: don't auto-expand when active session's terminal is foreground
-                if hovering && smartSuppress {
-                    if let delegate = NSApp.delegate as? AppDelegate,
-                       let pc = delegate.panelController,
-                       pc.isActiveTerminalForeground() {
-                        return
-                    }
-                }
 
                 isHovered = hovering
-                if hovering {
-                    refreshUsageMonitors()
-                    // Delay expansion to avoid accidental triggers
-                    hoverTimer?.invalidate()
-                    hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
-                        Task { @MainActor in
-                            // Guard: mouse may have left during the delay
-                            guard isHovered else { return }
-                            if hapticOnHover {
-                                let performer = NSHapticFeedbackManager.defaultPerformer
-                                switch hapticIntensity {
-                                case 3: // strong: two taps
-                                    performer.perform(.levelChange, performanceTime: .now)
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                        performer.perform(.levelChange, performanceTime: .now)
-                                    }
-                                case 2: // medium
-                                    performer.perform(.levelChange, performanceTime: .default)
-                                default: // light
-                                    performer.perform(.alignment, performanceTime: .default)
-                                }
-                            }
-                            withAnimation(NotchAnimation.open) {
-                                appState.surface = .sessionList
-                                appState.cancelCompletionQueue()
-                                if appState.activeSessionId == nil {
-                                    appState.activeSessionId = appState.sessions.keys.sorted().first
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // Collapse with brief delay to prevent flicker on accidental mouse-out
+                if !hovering {
+                    // Collapse with brief delay to prevent flicker on accidental mouse-out.
+                    // Hover-in (collapsed → expanded) is handled by the controller.
                     hoverTimer?.invalidate()
                     hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { _ in
                         Task { @MainActor in
