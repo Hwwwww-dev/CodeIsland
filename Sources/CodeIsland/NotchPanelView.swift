@@ -86,7 +86,12 @@ struct NotchPanelView: View {
             return nw
         }
         let wing = compactWingWidth
-        let extra: CGFloat = appState.status == .idle ? 0 : 20
+        // Constant +20 regardless of agent activity. Previously this only
+        // applied when status != .idle, so an idle but session-present bar
+        // collapsed 20 pt narrower than the active one — pushing the mascot
+        // closer to the physical notch and forcing the user to wait until
+        // ~70% expansion to see the full mascot. Now both finish at ~60%.
+        let extra: CGFloat = 20
         // Reserve space for tool status — proportional to screen width
         let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
         return nw + wing * 2 + extra + toolExtra
@@ -858,8 +863,16 @@ private struct IdleIndicatorBar: View {
     @State private var morphProgress: CGFloat = 0
 
     private static let wakeSpring = Animation.spring(response: 0.25, dampingFraction: 0.7)
-    private static let expandSpring = Animation.spring(response: 0.36, dampingFraction: 0.76)
-    private static let collapseSpring = Animation.spring(response: 0.3, dampingFraction: 0.84)
+    // Match NotchAnimation.open (response: 0.42, dampingFraction: 0.82) so the
+    // mascot's hover wake reveal unfolds in lock-step with the shell expanding.
+    // Previously (0.36, 0.76) finished ~60 ms ahead, so the mascot looked
+    // "ready" before the island had finished growing around it.
+    private static let expandSpring = Animation.spring(response: 0.42, dampingFraction: 0.82)
+    // Match NotchAnimation.close (response: 0.38, dampingFraction: 1.0) so the
+    // mascot's hover offset / scale unwind in lock-step with the shell. The
+    // previous (0.3, 0.84) finished ~80 ms before the shell, so the mascot
+    // visibly snapped home while the island was still collapsing.
+    private static let collapseSpring = Animation.spring(response: 0.38, dampingFraction: 0.9)
 
     private var targetMorphProgress: CGFloat {
         if showInlineActions { return 1 }
@@ -874,7 +887,11 @@ private struct IdleIndicatorBar: View {
     }
 
     private var leftRevealProgress: CGFloat {
-        stagedProgress(morphProgress, start: 0.08, end: 0.72)
+        // End at 0.58 to align with CompactLeftWing.collapsedFadeProgress —
+        // both states now finish their mascot reveal at ~60% expansion.
+        // Previously 0.72, which made idle's mascot only look "complete"
+        // at ~70%/90% expansion (depending on geometry).
+        stagedProgress(morphProgress, start: 0.08, end: 0.58)
     }
 
     private var rightRevealProgress: CGFloat {
