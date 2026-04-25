@@ -46,6 +46,15 @@ struct NotchPanelView: View {
     /// Minimum wing width needed to display compact bar content
     private var compactWingWidth: CGFloat { mascotSize + 14 }
 
+    /// Extra horizontal buffer the idle island must extend BEYOND the physical
+    /// notch on each side, so the lone mascot stays fully clear of the notch's
+    /// rounded inner corners and isn't covered by the physical bezel during
+    /// hover wake (scale + offset). With-session bars don't need this because
+    /// they have a session-count cluster on the right wing acting as visual
+    /// "hold" — idle has only the mascot to worry about. Tune empirically:
+    /// raise this if the mascot still clips into the notch on a given Mac.
+    private var idleNotchSideClearance: CGFloat { 28 }
+
     /// Effective notch / island width — user scale applies on all displays (刘海 + 外接非刘海).
     private var effectiveNotchW: CGFloat {
         let scale = CGFloat(max(collapsedWidthScale, 50)) / 100.0
@@ -57,9 +66,18 @@ struct NotchPanelView: View {
         let nw = effectiveNotchW
         let maxWidth = min(620, screenWidth - 40)
         if shouldShowExpanded { return min(max(nw + 200, 580), maxWidth) }
-        // Idle collapsed: single width only. Inline actions move to `IdleIndicatorBar` once
-        // expanded — never widen on hover first, or the +80 pre-step fights the expand spring (#52).
-        if showIdleIndicator { return nw + compactWingWidth * 2 }
+        // Idle collapsed: panel width has to extend beyond the physical notch
+        // by `idleNotchSideClearance` on each side, otherwise the mascot
+        // (sitting at the leading edge of the left wing) drifts under the
+        // notch's rounded bezel during hover wake (scale/offset shifts).
+        // With-session bars don't need this — their right wing has the
+        // session-count cluster which keeps the mascot well clear of the
+        // notch even at the minimum collapsed width. Inline actions still
+        // move into IdleIndicatorBar only at expand time, so this is a
+        // static baseline change, not a hover pre-widen (#52).
+        if showIdleIndicator {
+            return nw + (compactWingWidth + idleNotchSideClearance) * 2
+        }
         if !isActive {
             if hasNotch {
                 let ratio = (notchW - 20) / max(notchW, 1)
