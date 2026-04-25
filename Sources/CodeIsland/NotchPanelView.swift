@@ -46,15 +46,6 @@ struct NotchPanelView: View {
     /// Minimum wing width needed to display compact bar content
     private var compactWingWidth: CGFloat { mascotSize + 14 }
 
-    /// Extra horizontal buffer the idle island must extend BEYOND the physical
-    /// notch on each side, so the lone mascot stays fully clear of the notch's
-    /// rounded inner corners and isn't covered by the physical bezel during
-    /// hover wake (scale + offset). With-session bars don't need this because
-    /// they have a session-count cluster on the right wing acting as visual
-    /// "hold" — idle has only the mascot to worry about. Tune empirically:
-    /// raise this if the mascot still clips into the notch on a given Mac.
-    private var idleNotchSideClearance: CGFloat { 28 }
-
     /// Effective notch / island width — user scale applies on all displays (刘海 + 外接非刘海).
     private var effectiveNotchW: CGFloat {
         let scale = CGFloat(max(collapsedWidthScale, 50)) / 100.0
@@ -83,7 +74,13 @@ struct NotchPanelView: View {
             if collapsedWidthScale <= 50 {
                 return notchW
             }
-            return nw + (compactWingWidth + idleNotchSideClearance) * 2
+            // Use the same formula as with-session collapsed so the
+            // mascot-clearance threshold is identical across both states
+            // (~60% scale on a 14"/16" MBP). The previous +28 idle-only
+            // clearance was over-reserved for hover-wake animation (actual
+            // mascot motion is ~4pt) and pushed the no-session threshold
+            // up to ~70%, lagging with-session's ~60%.
+            return collapsedPanelWidth
         }
         if !isActive {
             if hasNotch {
@@ -92,16 +89,19 @@ struct NotchPanelView: View {
             }
             return nw
         }
-        let wing = compactWingWidth
-        // Constant +20 regardless of agent activity. Previously this only
-        // applied when status != .idle, so an idle but session-present bar
-        // collapsed 20 pt narrower than the active one — pushing the mascot
-        // closer to the physical notch and forcing the user to wait until
-        // ~70% expansion to see the full mascot. Now both finish at ~60%.
-        let extra: CGFloat = 20
+        return collapsedPanelWidth
+    }
+
+    /// Shared collapsed panel width formula used by both the idle indicator
+    /// and with-session bar so the mascot-clearance threshold is identical.
+    private var collapsedPanelWidth: CGFloat {
+        let nw = effectiveNotchW
         // Reserve space for tool status — proportional to screen width
         let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
-        return nw + wing * 2 + extra + toolExtra
+        // +20 is the symmetric static safety margin (10pt per side) — covers
+        // the hover-wake offset/scale (~4pt) on no-session and the wing
+        // breathing room on with-session.
+        return nw + compactWingWidth * 2 + 20 + toolExtra
     }
 
     private func refreshUsageMonitors() {
