@@ -292,9 +292,14 @@ def install_claude():
         {"matcher": "manual", "hooks": [{"type": "command", "command": cmd, "timeout": 60}]},
     ]
     hooks["UserPromptSubmit"] = without_matcher
+    hooks["PreToolUse"] = with_matcher
+    hooks["PostToolUse"] = with_matcher
+    hooks["PostToolUseFailure"] = with_matcher
     hooks["PermissionRequest"] = with_long_timeout
     hooks["Notification"] = with_matcher
     hooks["Stop"] = without_matcher
+    hooks["SubagentStart"] = without_matcher
+    hooks["SubagentStop"] = without_matcher
     hooks["SessionStart"] = without_matcher
     hooks["SessionEnd"] = without_matcher
     hooks["PreCompact"] = precompact
@@ -329,8 +334,13 @@ def install_codex():
 
     cmd = command_for("codex")
     entry = [{"hooks": [{"type": "command", "command": cmd, "timeout": 60}]}]
+    permission_entry = [{"hooks": [{"type": "command", "command": cmd, "timeout": 86400}]}]
     hooks["SessionStart"] = entry
+    hooks["SessionEnd"] = entry
     hooks["UserPromptSubmit"] = entry
+    hooks["PreToolUse"] = entry
+    hooks["PostToolUse"] = entry
+    hooks["PermissionRequest"] = permission_entry
     hooks["Stop"] = entry
     data["hooks"] = hooks
     write_json(hooks_path, data)
@@ -356,9 +366,14 @@ def install_codebuddy():
         {"matcher": "manual", "hooks": [{"type": "command", "command": cmd, "timeout": 60}]},
     ]
     hooks["UserPromptSubmit"] = without_matcher
+    hooks["PreToolUse"] = with_matcher
+    hooks["PostToolUse"] = with_matcher
+    hooks["PostToolUseFailure"] = with_matcher
     hooks["PermissionRequest"] = with_long_timeout
     hooks["Notification"] = with_matcher
     hooks["Stop"] = without_matcher
+    hooks["SubagentStart"] = without_matcher
+    hooks["SubagentStop"] = without_matcher
     hooks["SessionStart"] = without_matcher
     hooks["SessionEnd"] = without_matcher
     hooks["PreCompact"] = precompact

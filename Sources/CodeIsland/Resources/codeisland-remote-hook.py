@@ -25,7 +25,7 @@ def _normalize_event(name):
     if name == "afterShellExecution":
         return "PostToolUse"
     if name == "beforeReadFile":
-        return "PreToolUse"
+        return "PostToolUse"
     if name == "afterFileEdit":
         return "PostToolUse"
     if name == "beforeMCPExecution":

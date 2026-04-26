@@ -59,6 +59,35 @@ public enum CLIProcessResolver {
         }
         return nil
     }
+
+    /// Standard display name for a CLI source identifier. Used in stats / rankings.
+    /// Unknown sources fall back to a title-cased version of the source.
+    public static func displayName(forSource source: String) -> String {
+        switch source {
+        case "claude":      return "Claude Code"
+        case "codex":       return "Codex"
+        case "gemini":      return "Gemini CLI"
+        case "antigravity": return "AntiGravity"
+        case "cursor":      return "Cursor"
+        case "trae":        return "Trae"
+        case "traecn":      return "Trae CN"
+        case "traecli":     return "Trae CLI"
+        case "copilot":     return "Copilot"
+        case "qoder":       return "Qoder"
+        case "droid":       return "Factory"
+        case "codebuddy":   return "CodeBuddy"
+        case "codybuddycn": return "CodyBuddy CN"
+        case "stepfun":     return "StepFun"
+        case "workbuddy":   return "WorkBuddy"
+        case "hermes":      return "Hermes"
+        case "qwen":        return "Qwen Code"
+        case "kimi":        return "Kimi Code"
+        case "opencode":    return "OpenCode"
+        default:
+            guard let first = source.first else { return source }
+            return first.uppercased() + source.dropFirst()
+        }
+    }
 }
 
 public enum AgentStatus: Sendable {
@@ -94,6 +123,7 @@ public struct HookEvent {
         }
         self.toolName = HookEvent.firstString(in: json, keys: ["tool_name", "toolName", "tool", "name"])
             ?? HookEvent.firstString(inNestedDictionary: json, containerKeys: ["tool", "payload", "data"], keys: ["name", "tool_name", "toolName"])
+            ?? HookEvent.inferToolName(fromEventName: eventName)
         self.toolUseId = HookEvent.firstString(in: json, keys: ["tool_use_id", "toolUseId"])
             ?? HookEvent.firstString(inNestedDictionary: json, containerKeys: ["tool", "tool_use", "toolUse", "payload", "data"], keys: ["id", "tool_use_id", "toolUseId"])
         self.toolInput = HookEvent.firstDictionary(in: json, keys: ["tool_input", "toolInput", "input", "arguments", "args", "params"])
@@ -177,6 +207,21 @@ public struct HookEvent {
             }
         }
         return nil
+    }
+
+    private static func inferToolName(fromEventName eventName: String) -> String? {
+        switch eventName {
+        case "beforeShellExecution", "afterShellExecution":
+            return "Bash"
+        case "beforeReadFile":
+            return "Read"
+        case "afterFileEdit":
+            return "Edit"
+        case "beforeMCPExecution", "afterMCPExecution":
+            return "MCP"
+        default:
+            return nil
+        }
     }
 
     private static func firstDictionary(in dict: [String: Any], keys: [String]) -> [String: Any]? {

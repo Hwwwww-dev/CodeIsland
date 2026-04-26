@@ -35,9 +35,13 @@ final class DerivedSessionStateTests: XCTestCase {
     }
 
     func testNormalizesCocoSnakeCaseEvents() {
-        XCTAssertEqual(EventNormalizer.normalize("pre_tool_use"), "PreToolUse")
-        XCTAssertEqual(EventNormalizer.normalize("permission_request"), "PermissionRequest")
-        XCTAssertEqual(EventNormalizer.normalize("post_compact"), "PostCompact")
+        XCTAssertEqual(EventNormalizer.normalizeName("pre_tool_use"), "PreToolUse")
+        XCTAssertEqual(EventNormalizer.normalizeName("permission_request"), "PermissionRequest")
+        XCTAssertEqual(EventNormalizer.normalizeName("post_compact"), "PostCompact")
+    }
+
+    func testNormalizesFlatReadFileAsCompletedToolUse() {
+        XCTAssertEqual(EventNormalizer.normalizeName("beforeReadFile"), "PostToolUse")
     }
 
     func testCLIProcessResolverPrefersTraecliBinaryOverShellParent() {

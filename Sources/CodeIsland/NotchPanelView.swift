@@ -139,6 +139,7 @@ struct NotchPanelView: View {
                     .frame(height: notchHeight)
                 } else if showIdleIndicator {
                     IdleIndicatorBar(
+                        appState: appState,
                         mascotSize: mascotSize,
                         compactWingWidth: compactWingWidth,
                         notchW: effectiveNotchW,
@@ -223,6 +224,9 @@ struct NotchPanelView: View {
                             }
                         }
                         .transition(.opacity)
+                    case .characterPanel:
+                        CharacterPanelView(appState: appState)
+                            .transition(.opacity)
                     case .collapsed:
                         EmptyView()
                     }
@@ -379,6 +383,7 @@ private struct CompactLeftWing: View {
     // Bound via @AppStorage so flipping the default mascot in Settings rerenders this view
     // even when AppState.primarySource wasn't recomputed (no session mutations in flight).
     @AppStorage(SettingsKey.defaultSource) private var settingsDefaultSource = SettingsDefaults.defaultSource
+    @State private var engine = CharacterEngine.shared
 
     private var displaySession: SessionSnapshot? {
         let sid = appState.rotatingSessionId ?? appState.activeSessionId ?? appState.sessions.keys.sorted().first
@@ -391,6 +396,10 @@ private struct CompactLeftWing: View {
         return appState.primarySource
     }
     private var displayStatus: AgentStatus { displaySession?.status ?? .idle }
+    private var mascotStatus: AgentStatus {
+        // Real work status always wins. Mood mascots only render during idle.
+        displayStatus
+    }
     private var liveTool: String? { displaySession?.currentTool }
     @State private var shownTool: String?
     @State private var lingerTimer: Timer?
@@ -434,8 +443,8 @@ private struct CompactLeftWing: View {
     @ViewBuilder
     private var collapsedContent: some View {
         HStack(spacing: 6) {
-            MascotView(source: displaySource, status: displayStatus, size: mascotSize)
-                .id(displaySource)
+            MascotView(source: displaySource, status: mascotStatus, mood: engine.currentMood, size: mascotSize)
+                .id("\(displaySource)-\(mascotStatus)-\(engine.currentMood.rawValue)")
                 .animation(.easeInOut(duration: 0.3), value: displaySource)
 
             if hasNotch, showToolStatus {
@@ -462,7 +471,30 @@ private struct CompactLeftWing: View {
 
     @ViewBuilder
     private var expandedContent: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
+            // Character panel icon — always visible regardless of session count
+            let inCharPanel = appState.surface == .characterPanel
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if inCharPanel {
+                        appState.surface = appState.sessions.isEmpty ? .collapsed : .sessionList
+                    } else {
+                        appState.surface = .characterPanel
+                    }
+                }
+            } label: {
+                Image(systemName: inCharPanel ? "chevron.left" : "waveform.path.ecg")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(inCharPanel ? .white.opacity(0.7) : Color(red: 0.6, green: 0.9, blue: 0.7).opacity(0.85))
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 22, height: 22)
+                    .background(
+                        Circle()
+                            .fill(inCharPanel ? .white.opacity(0.1) : Color(red: 0.3, green: 0.85, blue: 0.5).opacity(0.12))
+                    )
+            }
+            .buttonStyle(.plain)
+
             if appState.sessions.count > 1 {
                 HStack(spacing: 1) {
                     ForEach([("all", "ALL"), ("status", "STA"), ("cli", "CLI")], id: \.0) { tag, label in
@@ -861,6 +893,7 @@ private struct NotchIconButton: View {
 // MARK: - Idle Indicator Bar
 
 private struct IdleIndicatorBar: View {
+    var appState: AppState
     let mascotSize: CGFloat
     let compactWingWidth: CGFloat
     let notchW: CGFloat
@@ -871,7 +904,9 @@ private struct IdleIndicatorBar: View {
     let showInlineActions: Bool
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(SettingsKey.soundEnabled) private var soundEnabled = SettingsDefaults.soundEnabled
+    @AppStorage(SettingsKey.defaultSource) private var settingsDefaultSource = SettingsDefaults.defaultSource
     @State private var morphProgress: CGFloat = 0
+    @State private var engine = CharacterEngine.shared
 
     private static let wakeSpring = Animation.spring(response: 0.25, dampingFraction: 0.7)
     // Match NotchAnimation.open (response: 0.42, dampingFraction: 0.82) so the
@@ -949,9 +984,13 @@ private struct IdleIndicatorBar: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Left: mascot
+            // Left: mascot — tap to open character panel
             HStack(spacing: 6) {
-                MascotView(source: "claude", status: .idle, size: mascotSize, animated: true)
+                MascotView(source: settingsDefaultSource,
+                           status: .idle,
+                           mood: engine.currentMood,
+                           size: mascotSize,
+                           animated: true)
                     // Always fully visible. Previously opacity ramped from 0.5
                     // → 0.9 driven by mascotEmphasis (peaks at morphProgress
                     // ≈ 0.72), so the mascot only looked "complete" when the
@@ -964,6 +1003,12 @@ private struct IdleIndicatorBar: View {
                         anchor: .leading
                     )
                     .offset(x: wakeProgress * 1.5 + leftRevealProgress, y: -wakeProgress * 0.8)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(NotchAnimation.open) {
+                            appState.surface = .characterPanel
+                        }
+                    }
             }
             .padding(.leading, 6)
             .frame(width: mascotWingWidth, alignment: .leading)
@@ -2228,6 +2273,7 @@ private struct SessionCard: View {
     @AppStorage(SettingsKey.aiMessageLines) private var aiMessageLines = SettingsDefaults.aiMessageLines
     @AppStorage(SettingsKey.showAgentDetails) private var showAgentDetails = SettingsDefaults.showAgentDetails
     @AppStorage(SettingsKey.autoCollapseAfterSessionJump) private var autoCollapseAfterSessionJump = SettingsDefaults.autoCollapseAfterSessionJump
+    @State private var engine = CharacterEngine.shared
     private var fontSize: CGFloat { CGFloat(contentFontSize) }
     private var aiLineLimit: Int? { aiMessageLines > 0 ? aiMessageLines : nil }
     private var approvalQueueIndex: Int? {
@@ -2279,9 +2325,11 @@ private struct SessionCard: View {
                 MascotView(
                     source: session.source,
                     status: session.status,
+                    mood: engine.currentMood,
                     size: 32,
                     animated: true
                 )
+                .id("\(session.source)-\(session.status)-\(engine.currentMood.rawValue)")
                 if showAgentDetails && !session.subagents.isEmpty {
                     let sorted = session.subagents.values.sorted { $0.startTime < $1.startTime }
                     // Grid: 4 per row, 8px icons

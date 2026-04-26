@@ -66,6 +66,26 @@ final class HookEventToolUseIdTests: XCTestCase {
         XCTAssertNil(event.toolUseId)
     }
 
+    func testInfersCursorShellToolNameFromEventNameWhenMissing() throws {
+        let event = try decode([
+            "hook_event_name": "afterShellExecution",
+            "session_id": "s1",
+            "command": "swift test",
+        ])
+
+        XCTAssertEqual(event.toolName, "Bash")
+    }
+
+    func testInfersCursorFileEditToolNameFromEventNameWhenMissing() throws {
+        let event = try decode([
+            "hook_event_name": "afterFileEdit",
+            "session_id": "s1",
+            "file_path": "Sources/App.swift",
+        ])
+
+        XCTAssertEqual(event.toolName, "Edit")
+    }
+
     func testFlatFieldTakesPrecedenceOverNested() throws {
         let event = try decode([
             "hook_event_name": "PreToolUse",

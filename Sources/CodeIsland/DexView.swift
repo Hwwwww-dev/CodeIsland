@@ -5,6 +5,7 @@ import CodeIslandCore
 /// Inspired by Codex's cloud icon with `>_` symbol. OpenAI black & white style.
 struct DexView: View {
     let status: AgentStatus
+    var mood: MascotMood = .neutral
     var size: CGFloat = 27
     var animated: Bool = true
     @State private var alive = false
@@ -24,7 +25,7 @@ struct DexView: View {
             switch status {
             case .idle:
                 if animated {
-                    sleepScene
+                    idleMoodScene
                 } else {
                     staticSleepScene
                 }
@@ -38,6 +39,19 @@ struct DexView: View {
         .onChange(of: status) {
             alive = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { alive = true }
+        }
+    }
+
+    /// Dispatches to the correct idle scene based on mood.
+    @ViewBuilder
+    private var idleMoodScene: some View {
+        switch mood {
+        case .hungry:  hungryScene
+        case .tired:   tiredScene
+        case .sad:     sadScene
+        case .sick:    sickScene
+        case .joyful:  joyfulScene
+        case .neutral: sleepScene
         }
     }
 
@@ -324,6 +338,308 @@ struct DexView: View {
                 c.fill(Path(v.r(bx, by + 4.0 * bangScale, bw, 1.5 * bangScale, dy: 0)),
                        with: .color(Self.alertC.opacity(bangOp)))
             }
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // MOOD SCENES — idle variants for Dex (cloud mascot)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // HUNGRY — wobbly cloud + open mouth + food emojis floating past
+    private var hungryScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let float = sin(t * .pi * 2 / 4.0) * 1.5   // bigger float
+                let wobble = sin(t * 10) * 0.7              // faster, bigger wobble
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, width: 7 + abs(float) * 0.4, opacity: 0.22)
+                    drawLegs(c, v: v)
+                    drawCloud(c, v: v, dy: float + wobble, squashX: 1 + wobble * 0.04, squashY: 1)
+                    // Open mouth: wide `>` with big open underscore gap (hungry gape)
+                    c.fill(Path(v.r(3, 10, 1, 1, dy: float + wobble)), with: .color(Self.promptC))
+                    c.fill(Path(v.r(4, 11, 1, 1, dy: float + wobble)), with: .color(Self.promptC))
+                    c.fill(Path(v.r(3, 12, 1, 1, dy: float + wobble)), with: .color(Self.promptC))
+                    // Wide open mouth gap
+                    c.fill(Path(v.r(5.5, 10.5, 4, 1.8, dy: float + wobble)),
+                           with: .color(Self.promptC.opacity(0.85)))
+                    // Stomach rumble dots (belly area)
+                    let rumble = sin(t * 18) * 0.5
+                    for i: CGFloat in [0, 1, 2] {
+                        c.fill(Path(v.r(4 + i * 2, 12.5 + rumble * 0.3, 0.8, 0.8, dy: float + wobble)),
+                               with: .color(Color(red: 1.0, green: 0.6, blue: 0.1).opacity(0.5)))
+                    }
+                }
+            }
+            // Multiple food emoji particles floating past
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let foods = ["🍕", "🍔", "🍩", "🌮", "🍎"]
+                ZStack {
+                    ForEach(0..<5, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 2.0 + ci * 0.35
+                        let delay = ci * 0.6
+                        let p = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, p)
+                        let xOff = size * CGFloat(-0.28 + ci * 0.15 + sin(pp * .pi) * 0.12)
+                        let yOff = -size * CGFloat(0.08 + pp * 0.38)
+                        let op = pp < 0.72 ? 0.9 : (1.0 - pp) * 3.21 * 0.9
+                        Text(foods[i % foods.count])
+                            .font(.system(size: max(5, size * 0.19)))
+                            .opacity(op)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // TIRED — drooping cloud + nodding (bob down/up) + half-closed eyes + big Z
+    private var tiredScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                // Nodding: slow dip then snap back
+                let nodPhase = t.truncatingRemainder(dividingBy: 3.2) / 3.2
+                let nod: CGFloat = nodPhase < 0.6
+                    ? CGFloat(sin(nodPhase / 0.6 * .pi)) * 2.0   // dip down 2 units
+                    : 0
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, opacity: 0.14)
+                    drawLegs(c, v: v)
+                    // More squashed cloud = heavy drooping
+                    drawCloud(c, v: v, dy: nod, squashX: 1.06, squashY: 0.90)
+                    // Half-closed eyes: two thin horizontal bars
+                    c.fill(Path(v.r(3.5, 10.5, 2.5, 0.5, dy: nod)),
+                           with: .color(Self.promptC.opacity(0.7)))
+                    c.fill(Path(v.r(8.5, 10.5, 2.5, 0.5, dy: nod)),
+                           with: .color(Self.promptC.opacity(0.7)))
+                    // Dim underscore cursor = barely awake
+                    c.fill(Path(v.r(6, 12, 3, 1, dy: nod)),
+                           with: .color(Self.promptC.opacity(0.12)))
+                }
+            }
+            // Two staggered slow Zs (bigger, more visible)
+            TimelineView(.periodic(from: .now, by: 0.07)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<2, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 3.8 + ci * 0.6
+                        let delay = ci * 1.6
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let fontSize = max(7, size * CGFloat(0.22 + p * 0.10 + ci * 0.03))
+                        let op = p < 0.78 ? 0.72 : (1.0 - p) * 3.43 * 0.72
+                        let yOff = -size * CGFloat(0.10 + p * 0.40)
+                        let xOff = size * CGFloat(0.06 + ci * 0.12)
+                        Text("z")
+                            .font(.system(size: fontSize, weight: .black, design: .monospaced))
+                            .foregroundStyle(Color(red: 0.55, green: 0.65, blue: 1.0).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // SAD — cold-tinted cloud, drooping mouth, two tear streams, slight lean
+    private var sadScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let float = sin(t * .pi * 2 / 4.5) * 0.5
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, opacity: 0.18)
+                    drawLegs(c, v: v)
+                    // Cold blue-grey tinted cloud
+                    var gctx = c
+                    gctx.opacity = 0.68
+                    drawCloud(gctx, v: v, dy: float)
+                    // Frown: inverted `>` — bottom pointing down
+                    c.fill(Path(v.r(3, 12, 1, 1, dy: float)), with: .color(Self.promptC.opacity(0.6)))
+                    c.fill(Path(v.r(4, 11, 1, 1, dy: float)), with: .color(Self.promptC.opacity(0.6)))
+                    c.fill(Path(v.r(5, 12, 1, 1, dy: float)), with: .color(Self.promptC.opacity(0.6)))
+                    // Cold blue tint overlay pixels on cloud body
+                    for row: CGFloat in [10, 11, 12] {
+                        c.fill(Path(v.r(2, row, 11, 1, dy: float)),
+                               with: .color(Color(red: 0.3, green: 0.5, blue: 0.9).opacity(0.12)))
+                    }
+                }
+            }
+            // Two staggered tear streams (left & right)
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<2, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.8 + ci * 0.5
+                        let delay = ci * 0.85
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, phase)
+                        let yOff = size * CGFloat(0.04 + pp * 0.42)  // longer fall
+                        let xOff = size * CGFloat(-0.08 + ci * 0.18)
+                        let op = pp < 0.65 ? 0.80 : (1.0 - pp) * 2.29 * 0.80
+                        Circle()
+                            .fill(Color(red: 0.25, green: 0.55, blue: 1.0).opacity(op))
+                            .frame(width: size * 0.075, height: size * 0.12)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // SICK — green-tinted cloud + irregular shake + X eyes + sweat drops
+    private var sickScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                // Irregular sick wobble: two-frequency shake
+                let shake = sin(t * 7) * 0.9 + sin(t * 13.5) * 0.5
+                let float = sin(t * .pi * 2 / 5.0) * 0.4
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, opacity: 0.15)
+                    drawLegs(c, v: v)
+                    // Green-tinted sick cloud (opacity + green overlay)
+                    let sickCloud = Color(red: 0.82, green: 0.92, blue: 0.75).opacity(0.88)
+                    let rows: [(y: CGFloat, x: CGFloat, w: CGFloat)] = [
+                        (14, 4, 7), (13, 3, 9), (12, 2, 11),
+                        (11, 1, 13), (10, 1, 13), (9, 1, 13),
+                        (8, 2, 11), (7, 2, 11),
+                        (6, 3, 3), (6, 6, 3), (6, 9, 3),
+                        (5, 4, 2), (5, 6.5, 2), (5, 9, 2),
+                    ]
+                    c.translateBy(x: shake * v.s, y: 0)
+                    for row in rows {
+                        c.fill(Path(v.r(row.x, row.y, row.w, 1, dy: float)),
+                               with: .color(sickCloud))
+                    }
+                    // X eyes (sick): two diagonal cross marks
+                    let eyePositions: [(CGFloat, CGFloat)] = [(3.0, 10.0), (8.5, 10.0)]
+                    for (ex, ey) in eyePositions {
+                        // Top-left to bottom-right
+                        c.fill(Path(v.r(ex,       ey,       0.8, 0.8, dy: float)), with: .color(Self.promptC.opacity(0.9)))
+                        c.fill(Path(v.r(ex + 0.8, ey + 0.8, 0.8, 0.8, dy: float)), with: .color(Self.promptC.opacity(0.9)))
+                        // Top-right to bottom-left
+                        c.fill(Path(v.r(ex + 0.8, ey,       0.8, 0.8, dy: float)), with: .color(Self.promptC.opacity(0.9)))
+                        c.fill(Path(v.r(ex,       ey + 0.8, 0.8, 0.8, dy: float)), with: .color(Self.promptC.opacity(0.9)))
+                    }
+                    // Wavy sick mouth
+                    for dx: CGFloat in [0, 1, 2] {
+                        let wavY: CGFloat = dx.truncatingRemainder(dividingBy: 2) == 0 ? 12.5 : 12.0
+                        c.fill(Path(v.r(5 + dx, wavY, 0.9, 0.9, dy: float)),
+                               with: .color(Color(red: 0.2, green: 0.75, blue: 0.3).opacity(0.8)))
+                    }
+                    // Fever dots above cloud (4 dots)
+                    for i: CGFloat in [0, 1, 2, 3] {
+                        let dotRect = v.r(3.5 + i * 2.2, 4.5, 1.0, 1.0, dy: float)
+                        c.fill(Path(ellipseIn: dotRect),
+                               with: .color(Color(red: 0.95, green: 0.25, blue: 0.35).opacity(0.80)))
+                    }
+                    c.translateBy(x: -shake * v.s, y: 0)
+                }
+            }
+            // Sweat drops (3 drops, staggered)
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<3, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.6 + ci * 0.4
+                        let delay = ci * 0.55
+                        let p = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, p)
+                        let xOff = size * CGFloat(-0.15 + ci * 0.16)
+                        let yOff = size * CGFloat(0.08 + pp * 0.35)
+                        let op = pp < 0.6 ? 0.75 : (1.0 - pp) * 1.875 * 0.75
+                        Circle()
+                            .fill(Color(red: 0.4, green: 0.9, blue: 0.6).opacity(op))
+                            .frame(width: size * 0.065, height: size * 0.09)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // JOYFUL — bouncing cloud + `>_` face + dense sparkle ring (12 particles)
+    private var joyfulScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                joyfulCanvas(t: t)
+            }
+            TimelineView(.periodic(from: .now, by: 0.04)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    // Inner ring: 6 gold stars
+                    ForEach(0..<6, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.3 + ci * 0.15
+                        let delay = ci * 0.22
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let angle = ci * 60.0 * .pi / 180.0
+                        let r = size * CGFloat(0.28 + p * 0.16)
+                        let xOff = r * CGFloat(cos(angle))
+                        let yOff = r * CGFloat(sin(angle)) - size * 0.08
+                        let op = p < 0.60 ? 1.0 : (1.0 - p) * 2.5 * 1.0
+                        Text("✦")
+                            .font(.system(size: max(5, size * 0.155)))
+                            .foregroundStyle(Color(red: 1.0, green: 0.85, blue: 0.0).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                    // Outer ring: 6 smaller white sparkles
+                    ForEach(0..<6, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.8 + ci * 0.18
+                        let delay = ci * 0.30 + 0.11
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let angle = (ci * 60.0 + 30.0) * .pi / 180.0
+                        let r = size * CGFloat(0.38 + p * 0.14)
+                        let xOff = r * CGFloat(cos(angle))
+                        let yOff = r * CGFloat(sin(angle)) - size * 0.06
+                        let op = p < 0.55 ? 0.85 : (1.0 - p) * 1.89 * 0.85
+                        Text("✦")
+                            .font(.system(size: max(4, size * 0.10)))
+                            .foregroundStyle(Color(red: 1.0, green: 1.0, blue: 0.6).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Joyful cloud: bouncy jump animation + bright full-opacity `>_` face.
+    private func joyfulCanvas(t: Double) -> some View {
+        // Bouncy jump: quick rise then settle with squash
+        let jumpPhase = t.truncatingRemainder(dividingBy: 1.2) / 1.2
+        let jumpY: CGFloat = jumpPhase < 0.35
+            ? CGFloat(-sin(jumpPhase / 0.35 * .pi) * 2.8)   // rise up 2.8 units
+            : 0
+        let squashY: CGFloat = jumpPhase > 0.38 && jumpPhase < 0.52
+            ? CGFloat(1.0 - (jumpPhase - 0.38) / 0.14 * 0.12)  // squash on land
+            : 1.0
+        let cursorPhase = t.truncatingRemainder(dividingBy: 0.7)
+        let cursorOn = cursorPhase < 0.42
+
+        return Canvas { c, sz in
+            let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+            let shadowW: CGFloat = 7 + abs(jumpY) * 0.4
+            let shadowOp: Double = max(0.10, 0.22 - Double(abs(jumpY)) * 0.025)
+            drawShadow(c, v: v, width: shadowW, opacity: shadowOp)
+            drawLegs(c, v: v)
+            drawCloud(c, v: v, dy: jumpY, squashX: 1.0, squashY: squashY)
+            // Bright gold-tinted prompt for joyful
+            drawPrompt(c, v: v, dy: jumpY,
+                       color: Color(red: 0.0, green: 0.0, blue: 0.0), cursorOn: cursorOn)
         }
     }
 }

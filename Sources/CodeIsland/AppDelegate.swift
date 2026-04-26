@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import os.log
+import CodeIslandCore
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -104,10 +105,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hookRecoveryTimer?.invalidate()
         teardownGlobalShortcut()
         appState.saveSessions()
+        CharacterEngine.shared.forceSave()
         RemoteManager.shared.shutdown()
         hookServer?.stop()
         appState.stopCodexAppServerWatcher()
         appState.stopSessionDiscovery()
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        CharacterEngine.shared.forceSave()
     }
 
     // MARK: - Global Shortcuts

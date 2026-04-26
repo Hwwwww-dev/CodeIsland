@@ -495,7 +495,9 @@ public func reduceEvent(
     maxHistory: Int
 ) -> [SideEffect] {
     let sessionId = event.sessionId ?? "default"
-    let eventName = EventNormalizer.normalize(event.eventName)
+    let normalized = EventNormalizer.normalize(event.eventName)
+    let eventName = normalized.eventName
+    let toolName = event.toolName ?? normalized.syntheticToolName
     var effects: [SideEffect] = []
 
     // Ensure session exists
@@ -514,6 +516,7 @@ public func reduceEvent(
             sessionId: sessionId,
             agentId: agentId,
             eventName: eventName,
+            toolName: toolName,
             event: event,
             maxHistory: maxHistory,
             effects: &effects
@@ -548,12 +551,12 @@ public func reduceEvent(
     case "PreToolUse":
         if !isWaiting {
             sessions[sessionId]?.status = .running
-            sessions[sessionId]?.currentTool = event.toolName
+            sessions[sessionId]?.currentTool = toolName
             sessions[sessionId]?.toolDescription = event.toolDescription
         }
     case "PostToolUse":
-        if let tool = sessions[sessionId]?.currentTool {
-            let desc = sessions[sessionId]?.toolDescription
+        if let tool = (sessions[sessionId]?.currentTool ?? nil) ?? toolName {
+            let desc = (sessions[sessionId]?.toolDescription ?? nil) ?? event.toolDescription
             sessions[sessionId]?.recordTool(tool, description: desc, success: true, agentType: nil, maxHistory: maxHistory)
         }
         if !isWaiting {
@@ -562,8 +565,8 @@ public func reduceEvent(
             sessions[sessionId]?.toolDescription = nil
         }
     case "PostToolUseFailure":
-        if let tool = sessions[sessionId]?.currentTool {
-            let desc = sessions[sessionId]?.toolDescription
+        if let tool = (sessions[sessionId]?.currentTool ?? nil) ?? toolName {
+            let desc = (sessions[sessionId]?.toolDescription ?? nil) ?? event.toolDescription
             sessions[sessionId]?.recordTool(tool, description: desc, success: false, agentType: nil, maxHistory: maxHistory)
         }
         if !isWaiting {
@@ -870,6 +873,7 @@ private func handleSubagentEvent(
     sessionId: String,
     agentId: String,
     eventName: String,
+    toolName: String?,
     event: HookEvent,
     maxHistory: Int,
     effects: inout [SideEffect]
@@ -906,7 +910,7 @@ private func handleSubagentEvent(
 
     case "PreToolUse":
         sessions[sessionId]?.subagents[agentId]?.status = .running
-        sessions[sessionId]?.subagents[agentId]?.currentTool = event.toolName
+        sessions[sessionId]?.subagents[agentId]?.currentTool = toolName
         sessions[sessionId]?.subagents[agentId]?.toolDescription = event.toolDescription
         sessions[sessionId]?.subagents[agentId]?.lastActivity = Date()
         // Keep parent session showing as active while subagents work

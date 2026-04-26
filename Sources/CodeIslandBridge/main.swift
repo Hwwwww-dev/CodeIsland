@@ -297,7 +297,7 @@ guard let sessionId = json["session_id"] as? String, !sessionId.isEmpty else {
 
 // Event type detection
 let eventName = json["hook_event_name"] as? String ?? ""
-let normalizedEventName = EventNormalizer.normalize(eventName)
+let normalizedEventName = EventNormalizer.normalizeName(eventName)
 let isPermission = normalizedEventName == "PermissionRequest"
 let isQuestion = (normalizedEventName == "Notification" || eventName == "afterAgentThought")
     && json["question"] as? String != nil

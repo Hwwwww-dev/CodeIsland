@@ -138,6 +138,7 @@ struct ConfigInstaller {
                 ("UserPromptSubmit", 5, false),
                 ("PreToolUse", 5, false),
                 ("PostToolUse", 5, false),
+                ("PermissionRequest", 86400, false),
                 ("Stop", 5, false),
             ]
         ),
@@ -309,6 +310,8 @@ struct ConfigInstaller {
                 ("UserPromptSubmit", 5, true),
                 ("PreToolUse", 5, false),
                 ("PostToolUse", 5, true),
+                ("PostToolUseFailure", 5, true),
+                ("PermissionRequest", 86400, false),
                 ("SessionStart", 5, false),
                 ("SessionEnd", 5, true),
                 ("Stop", 5, true),

@@ -83,6 +83,9 @@ enum SettingsKey {
 
     // Default mascot source when no sessions exist (falls back to this instead of always "claude")
     static let defaultSource = "defaultSource"
+
+    // Character / entertainment system
+    static let characterEnabled = "characterEnabled"
 }
 
 struct SettingsDefaults {
@@ -132,6 +135,8 @@ struct SettingsDefaults {
     static let collapsedWidthScale = 100  // percentage
 
     static let defaultSource = "claude"
+
+    static let characterEnabled = true
 }
 
 @MainActor
@@ -175,6 +180,7 @@ class SettingsManager {
             SettingsKey.showToolStatus: SettingsDefaults.showToolStatus,
             SettingsKey.collapsedWidthScale: SettingsDefaults.collapsedWidthScale,
             SettingsKey.defaultSource: SettingsDefaults.defaultSource,
+            SettingsKey.characterEnabled: SettingsDefaults.characterEnabled,
         ])
     }
 
@@ -286,6 +292,11 @@ class SettingsManager {
     var defaultSource: String {
         get { defaults.string(forKey: SettingsKey.defaultSource) ?? SettingsDefaults.defaultSource }
         set { defaults.set(newValue, forKey: SettingsKey.defaultSource) }
+    }
+
+    var characterEnabled: Bool {
+        get { defaults.bool(forKey: SettingsKey.characterEnabled) }
+        set { defaults.set(newValue, forKey: SettingsKey.characterEnabled) }
     }
 }
 

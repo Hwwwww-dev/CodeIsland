@@ -1,0 +1,127 @@
+import Foundation
+
+// MARK: - MascotMood
+
+/// Derived display mood for the active mascot. Orthogonal to AgentStatus.
+/// Only applies when AgentStatus == .idle; active statuses always win.
+public enum MascotMood: String, Codable, Sendable, Equatable {
+    case sick     // health < 30  (priority 1 — highest)
+    case tired    // energy < 30  (priority 2)
+    case hungry   // hunger < 30  (priority 3)
+    case sad      // mood < 30    (priority 4)
+    case joyful   // all ≥ 80     (priority 5)
+    case neutral  // otherwise    (priority 6 — lowest / default)
+}
+
+// MARK: - VitalStats
+
+/// Real-time vital stats, all clamped 0–100.
+public struct VitalStats: Codable, Sendable, Equatable {
+    public var hunger: Double = 100
+    public var mood:   Double = 100
+    public var energy: Double = 100
+    public var health: Double = 100
+
+    public init(hunger: Double = 100, mood: Double = 100,
+                energy: Double = 100, health: Double = 100) {
+        self.hunger = hunger
+        self.mood   = mood
+        self.energy = energy
+        self.health = health
+    }
+
+    public mutating func clamp() {
+        hunger = min(max(hunger, 0), 100)
+        mood   = min(max(mood,   0), 100)
+        energy = min(max(energy, 0), 100)
+        health = min(max(health, 0), 100)
+    }
+}
+
+// MARK: - CyberStats
+
+/// Permanent accumulation stats. Level = floor(total / 1000).
+public struct CyberStats: Codable, Sendable, Equatable {
+    public var focus:      Double = 0
+    public var diligence:  Double = 0
+    public var collab:     Double = 0
+    public var taste:      Double = 0
+    public var curiosity:  Double = 0
+
+    public init(focus: Double = 0, diligence: Double = 0, collab: Double = 0,
+                taste: Double = 0, curiosity: Double = 0) {
+        self.focus     = focus
+        self.diligence = diligence
+        self.collab    = collab
+        self.taste     = taste
+        self.curiosity = curiosity
+    }
+
+    public func level(for value: Double) -> Int { Int(value / 1000) }
+    public func progress(for value: Double) -> Double { value.truncatingRemainder(dividingBy: 1000) }
+}
+
+// MARK: - LifetimeStats
+
+public struct LifetimeStats: Codable, Sendable, Equatable {
+    public var totalSessions:          Int = 0
+    public var totalToolCalls:         Int = 0
+    public var totalActiveSeconds:     Int = 0
+    public var currentDayActiveSeconds: Int = 0
+    public var currentDayDate:         String = ""     // yyyy-MM-dd
+    public var streakDays:             Int = 0
+    public var lastActiveDate:         String = ""     // yyyy-MM-dd
+    public var toolUseCount:           [String: Int] = [:]
+    public var cliUseCount:            [String: Int] = [:]
+    public var overworkStreakDays:     Int = 0
+    // last7DaysActiveSeconds removed; data now lives in character_daily_active SQLite table.
+    // Query via CharacterPersistence.last7DaysActive() or CharacterEngine.last7DaysActive().
+
+    public init() {}
+
+    // Shared date formatter
+    private static let dayFmt: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        return fmt
+    }()
+
+    // Convenience: today's date string
+    public static var todayString: String {
+        dayFmt.string(from: Date())
+    }
+}
+
+// MARK: - CharacterSettings (embedded in CharacterStats)
+
+public struct CharacterSettings: Codable, Sendable, Equatable {
+    public var paused: Bool = false
+    public init(paused: Bool = false) { self.paused = paused }
+}
+
+// MARK: - CharacterStats (root Codable model)
+
+public struct CharacterStats: Codable, Sendable, Equatable {
+    public var version:       Int = 3
+    public var lastTickedAt:  Date = Date()
+    public var vital:         VitalStats = VitalStats()
+    public var cyber:         CyberStats = CyberStats()
+    public var stats:         LifetimeStats = LifetimeStats()
+    public var settings:      CharacterSettings = CharacterSettings()
+
+    public init() {}
+
+    // MARK: Mood derivation
+
+    /// Derives the current MascotMood from vital stats using priority ordering.
+    public var derivedMood: MascotMood {
+        if vital.health < 30 { return .sick }
+        if vital.energy < 30 { return .tired }
+        if vital.hunger < 30 { return .hungry }
+        if vital.mood   < 30 { return .sad }
+        if vital.hunger >= 80 && vital.mood >= 80 && vital.energy >= 80 && vital.health >= 80 {
+            return .joyful
+        }
+        return .neutral
+    }
+}

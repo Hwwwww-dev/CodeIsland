@@ -5,6 +5,7 @@ import CodeIslandCore
 /// Brand lime green #2ADB5C on dark background.
 struct QoderView: View {
     let status: AgentStatus
+    var mood: MascotMood = .neutral
     var size: CGFloat = 27
     var animated: Bool = true
     @State private var alive = false
@@ -24,7 +25,7 @@ struct QoderView: View {
             switch status {
             case .idle:
                 if animated {
-                    sleepScene
+                    idleMoodScene
                 } else {
                     staticSleepScene
                 }
@@ -126,6 +127,19 @@ struct QoderView: View {
     private func drawLegs(_ c: GraphicsContext, v: V) {
         c.fill(Path(v.r(5, 14.5, 1, 1.5)), with: .color(Self.bodyDk))
         c.fill(Path(v.r(9, 14.5, 1, 1.5)), with: .color(Self.bodyDk))
+    }
+
+    /// Dispatches to the correct idle scene based on mood.
+    @ViewBuilder
+    private var idleMoodScene: some View {
+        switch mood {
+        case .hungry:  hungryScene
+        case .tired:   tiredScene
+        case .sad:     sadScene
+        case .sick:    sickScene
+        case .joyful:  joyfulScene
+        case .neutral: sleepScene
+        }
     }
 
     // ━━━━━━ SLEEP ━━━━━━
@@ -279,6 +293,270 @@ struct QoderView: View {
                        with: .color(Self.alertC.opacity(bangOp)))
                 c.fill(Path(v.r(bx, by + 4.0 * bangScale, bw, 1.5 * bangScale, dy: 0)),
                        with: .color(Self.alertC.opacity(bangOp)))
+            }
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // MOOD SCENES — idle variants for Qoder (green bubble)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // HUNGRY — dual-freq wobble + big open mouth + belly rumble + food emojis
+    private var hungryScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let float = sin(t * .pi * 2 / 4.0) * 1.5
+                let wobble = sin(t * 7) * 0.6 + sin(t * 13.5) * 0.35
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, width: 7 + abs(float) * 0.4, opacity: 0.22)
+                    drawLegs(c, v: v)
+                    drawBubble(c, v: v, dy: float + wobble, squashX: 1 + wobble * 0.04)
+                    // Wide open mouth (hunger gape) below eyes
+                    c.fill(Path(v.r(5, 11.5, 5, 1.8, dy: float + wobble)),
+                           with: .color(Self.faceC.opacity(0.85)))
+                    // Belly rumble dots
+                    let rumble: CGFloat = sin(t * 20) > 0 ? 0.5 : 0.0
+                    for i: CGFloat in [0, 1, 2] {
+                        c.fill(Path(v.r(4.5 + i * 2, 12.5, 0.8, 0.8, dy: float + wobble)),
+                               with: .color(Color(red: 1.0, green: 0.6, blue: 0.1).opacity(0.45 + rumble * 0.35)))
+                    }
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let foods = ["🍕", "🍔", "🍩", "🌮", "🍎"]
+                ZStack {
+                    ForEach(0..<5, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 2.0 + ci * 0.35
+                        let delay = ci * 0.6
+                        let p = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, p)
+                        let xOff = size * CGFloat(-0.28 + ci * 0.15 + sin(pp * .pi) * 0.12)
+                        let yOff = -size * CGFloat(0.08 + pp * 0.38)
+                        let op = pp < 0.72 ? 0.9 : (1.0 - pp) * 3.21 * 0.9
+                        Text(foods[i % foods.count])
+                            .font(.system(size: max(5, size * 0.19)))
+                            .opacity(op)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // TIRED — slow nod + half-closed eye bars + 2 big Zs
+    private var tiredScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let nodPhase = t.truncatingRemainder(dividingBy: 3.2) / 3.2
+                let nod: CGFloat = nodPhase < 0.6
+                    ? CGFloat(sin(nodPhase / 0.6 * .pi)) * 2.0
+                    : 0
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, opacity: 0.14)
+                    drawLegs(c, v: v)
+                    drawBubble(c, v: v, dy: nod, squashX: 1.05, squashY: 0.92)
+                    // Half-closed eyes: dim thin bars over eye positions
+                    c.fill(Path(v.r(3.5, 9.2, 2.0, 0.5, dy: nod)),
+                           with: .color(Self.bodyC.opacity(0.7)))
+                    c.fill(Path(v.r(9.3, 9.2, 2.0, 0.5, dy: nod)),
+                           with: .color(Self.bodyC.opacity(0.7)))
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.07)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<2, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 3.8 + ci * 0.6
+                        let delay = ci * 1.6
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let fontSize = max(7, size * CGFloat(0.22 + p * 0.10 + ci * 0.03))
+                        let op = p < 0.78 ? 0.72 : (1.0 - p) * 3.43 * 0.72
+                        let yOff = -size * CGFloat(0.10 + p * 0.40)
+                        let xOff = size * CGFloat(0.06 + ci * 0.12)
+                        Text("z")
+                            .font(.system(size: fontSize, weight: .black, design: .monospaced))
+                            .foregroundStyle(Color(red: 0.55, green: 0.65, blue: 1.0).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // SAD — cold-tinted dim bubble + tear drops + frown override
+    private var sadScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let float = sin(t * .pi * 2 / 4.5) * 0.5
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, opacity: 0.18)
+                    drawLegs(c, v: v)
+                    var gctx = c
+                    gctx.opacity = 0.70
+                    drawBubble(gctx, v: v, dy: float)
+                    // Cold blue tint overlay
+                    for row: CGFloat in [9, 10, 11, 12] {
+                        c.fill(Path(v.r(1, row, 13, 1, dy: float)),
+                               with: .color(Color(red: 0.3, green: 0.5, blue: 0.9).opacity(0.12)))
+                    }
+                    // Frown (inverted V)
+                    c.fill(Path(v.r(5, 12, 1, 0.8, dy: float)), with: .color(Self.faceC.opacity(0.55)))
+                    c.fill(Path(v.r(6, 12.6, 3, 0.8, dy: float)), with: .color(Self.faceC.opacity(0.55)))
+                    c.fill(Path(v.r(9, 12, 1, 0.8, dy: float)), with: .color(Self.faceC.opacity(0.55)))
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<2, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.8 + ci * 0.5
+                        let delay = ci * 0.85
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, phase)
+                        let yOff = size * CGFloat(0.04 + pp * 0.42)
+                        let xOff = size * CGFloat(-0.08 + ci * 0.18)
+                        let op = pp < 0.65 ? 0.80 : (1.0 - pp) * 2.29 * 0.80
+                        Circle()
+                            .fill(Color(red: 0.25, green: 0.55, blue: 1.0).opacity(op))
+                            .frame(width: size * 0.075, height: size * 0.12)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // SICK — dual-freq shake + green overlay + X eyes + sweat drops
+    private var sickScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let shake = sin(t * 7) * 0.9 + sin(t * 13.5) * 0.5
+                let float = sin(t * .pi * 2 / 5.0) * 0.4
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, opacity: 0.15)
+                    drawLegs(c, v: v)
+                    c.translateBy(x: shake * v.s, y: 0)
+                    // Sick green-tinted bubble
+                    let sickGreen = Color(red: 0.55, green: 0.95, blue: 0.60)
+                    let rows: [(y: CGFloat, x: CGFloat, w: CGFloat)] = [
+                        (14, 4, 7), (13, 2, 11), (12, 1, 13),
+                        (11, 1, 13), (10, 1, 13), (9, 1, 13),
+                        (8, 1, 13), (7, 2, 11), (6, 3, 9), (5, 4, 7),
+                    ]
+                    for row in rows {
+                        c.fill(Path(v.r(row.x, row.y, row.w, 1, dy: float)),
+                               with: .color(sickGreen.opacity(0.82)))
+                    }
+                    // X eyes
+                    let eyePositions: [(CGFloat, CGFloat)] = [(3.5, 8.5), (9.3, 8.5)]
+                    for (ex, ey) in eyePositions {
+                        c.fill(Path(v.r(ex,       ey,       0.9, 0.9, dy: float)), with: .color(Self.faceC))
+                        c.fill(Path(v.r(ex + 0.9, ey + 0.9, 0.9, 0.9, dy: float)), with: .color(Self.faceC))
+                        c.fill(Path(v.r(ex + 0.9, ey,       0.9, 0.9, dy: float)), with: .color(Self.faceC))
+                        c.fill(Path(v.r(ex,       ey + 0.9, 0.9, 0.9, dy: float)), with: .color(Self.faceC))
+                    }
+                    // Fever dots above bubble
+                    for i: CGFloat in [0, 1, 2, 3] {
+                        let dotRect = v.r(3.5 + i * 2.2, 4.2, 1.0, 1.0, dy: float)
+                        c.fill(Path(ellipseIn: dotRect),
+                               with: .color(Color(red: 0.95, green: 0.25, blue: 0.35).opacity(0.80)))
+                    }
+                    c.translateBy(x: -shake * v.s, y: 0)
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<3, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.6 + ci * 0.4
+                        let delay = ci * 0.55
+                        let p = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, p)
+                        let xOff = size * CGFloat(-0.15 + ci * 0.16)
+                        let yOff = size * CGFloat(0.08 + pp * 0.35)
+                        let op = pp < 0.6 ? 0.75 : (1.0 - pp) * 1.875 * 0.75
+                        Circle()
+                            .fill(Color(red: 0.4, green: 0.9, blue: 0.6).opacity(op))
+                            .frame(width: size * 0.065, height: size * 0.09)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // JOYFUL — bouncy jump + bright smile + 12-particle sparkle ring
+    private var joyfulScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let jumpPhase = t.truncatingRemainder(dividingBy: 1.2) / 1.2
+                let jumpY: CGFloat = jumpPhase < 0.35
+                    ? CGFloat(-sin(jumpPhase / 0.35 * .pi) * 2.8)
+                    : 0
+                let squashY: CGFloat = jumpPhase > 0.38 && jumpPhase < 0.52
+                    ? CGFloat(1.0 - (jumpPhase - 0.38) / 0.14 * 0.12)
+                    : 1.0
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    let shadowW: CGFloat = 7 + abs(jumpY) * 0.4
+                    let shadowOp: Double = max(0.10, 0.22 - Double(abs(jumpY)) * 0.025)
+                    drawShadow(c, v: v, width: shadowW, opacity: shadowOp)
+                    drawLegs(c, v: v)
+                    drawBubble(c, v: v, dy: jumpY, squashY: squashY)
+                    drawQFace(c, v: v, dy: jumpY, color: Self.faceC, eyeScale: 1.2, showSmile: true)
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.04)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<6, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.3 + ci * 0.15
+                        let delay = ci * 0.22
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let angle = ci * 60.0 * .pi / 180.0
+                        let r = size * CGFloat(0.28 + p * 0.16)
+                        let xOff = r * CGFloat(cos(angle))
+                        let yOff = r * CGFloat(sin(angle)) - size * 0.08
+                        let op = p < 0.60 ? 1.0 : (1.0 - p) * 2.5 * 1.0
+                        Text("✦")
+                            .font(.system(size: max(5, size * 0.155)))
+                            .foregroundStyle(Color(red: 1.0, green: 0.85, blue: 0.0).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                    ForEach(0..<6, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.8 + ci * 0.18
+                        let delay = ci * 0.30 + 0.11
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let angle = (ci * 60.0 + 30.0) * .pi / 180.0
+                        let r = size * CGFloat(0.38 + p * 0.14)
+                        let xOff = r * CGFloat(cos(angle))
+                        let yOff = r * CGFloat(sin(angle)) - size * 0.06
+                        let op = p < 0.55 ? 0.85 : (1.0 - p) * 1.89 * 0.85
+                        Text("✦")
+                            .font(.system(size: max(4, size * 0.10)))
+                            .foregroundStyle(Color(red: 1.0, green: 1.0, blue: 0.6).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
             }
         }
     }

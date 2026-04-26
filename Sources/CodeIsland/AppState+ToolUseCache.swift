@@ -24,7 +24,7 @@ extension AppState {
     /// Cache a PreToolUse so later PermissionRequest / PostToolUse events carrying the
     /// same tool_use_id can be correlated back to the originating invocation.
     func cachePreToolUseIfApplicable(_ event: HookEvent) {
-        guard EventNormalizer.normalize(event.eventName) == "PreToolUse" else { return }
+        guard EventNormalizer.normalizeName(event.eventName) == "PreToolUse" else { return }
         guard let toolUseId = event.toolUseId, !toolUseId.isEmpty else { return }
 
         pendingToolUses[toolUseId] = PreToolUseRecord(
@@ -40,7 +40,7 @@ extension AppState {
     /// same id is still sitting in the queue (e.g. agent moved on after a local timeout),
     /// drain it with a deny so we don't hold the UI hostage to a dead waiter.
     func resolveToolUseIfCompleted(_ event: HookEvent) {
-        let normalized = EventNormalizer.normalize(event.eventName)
+        let normalized = EventNormalizer.normalizeName(event.eventName)
         guard normalized == "PostToolUse"
                 || normalized == "PostToolUseFailure"
                 || normalized == "PermissionDenied"

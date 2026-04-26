@@ -15,7 +15,21 @@ class SettingsWindowController {
         }
     }
 
-    func show() {
+    /// Bridge for navigating to a specific Mascots sub-tab on next appear.
+    /// 0 = Appearance, 1 = Stats & Status.
+    static var pendingMascotsTab: Int? = nil
+
+    func show(page: SettingsPage? = nil, mascotsTab: Int? = nil) {
+        if let page {
+            SettingsView.pendingPage = page
+        }
+        if let tab = mascotsTab {
+            SettingsWindowController.pendingMascotsTab = tab
+        }
+        show()
+    }
+
+    private func show() {
         // Switch to regular activation policy so the window can receive focus
         NSApp.setActivationPolicy(.regular)
         // Use the actual bundle app icon so Dock matches the packaged asset catalog icon.

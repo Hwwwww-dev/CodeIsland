@@ -10,13 +10,15 @@ enum IslandSurface: Equatable {
     case questionCard(sessionId: String)
     /// 自动展开显示完成通知
     case completionCard(sessionId: String)
+    /// 显示角色面板 (CharacterPanelView)
+    case characterPanel
 
     var isExpanded: Bool { self != .collapsed }
 
     /// 当前 surface 关联的 session ID（如有）
     var sessionId: String? {
         switch self {
-        case .collapsed, .sessionList: return nil
+        case .collapsed, .sessionList, .characterPanel: return nil
         case .approvalCard(let id), .questionCard(let id), .completionCard(let id): return id
         }
     }

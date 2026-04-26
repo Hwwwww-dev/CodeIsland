@@ -90,6 +90,12 @@ final class AppState {
     }
     private var modelReadRetryAt: [String: Date] = [:]
 
+    init() {
+        CharacterEngine.shared.setRunningSessionProvider { [weak self] in
+            self?.runningCharacterSessionIds() ?? []
+        }
+    }
+
     private var dismissedPermissionSessionIds: Set<String> = []
     private func nextVisiblePermissionIndex() -> Int? {
         permissionQueue.firstIndex { request in
@@ -257,6 +263,35 @@ final class AppState {
         prunePendingToolUses()
 
         refreshDerivedState()
+    }
+
+    private func runningCharacterSessionIds() -> Set<String> {
+        let runningBundleIds = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
+
+        return Set(sessions.compactMap { sessionId, session in
+            guard session.status != .idle else { return nil }
+
+            if session.isRemote {
+                return sessionId
+            }
+
+            if session.isNativeAppMode {
+                guard let bundleId = session.termBundleId else { return nil }
+                return runningBundleIds.contains(bundleId) ? sessionId : nil
+            }
+
+            if let monitor = processMonitors[sessionId],
+               Self.isLiveProcess(monitor.process) {
+                return sessionId
+            }
+
+            if let process = resolvedSessionProcessIdentity(for: sessionId),
+               Self.isLiveProcess(process) {
+                return sessionId
+            }
+
+            return nil
+        })
     }
 
     // MARK: - Process Monitoring (DispatchSource)
@@ -475,6 +510,8 @@ final class AppState {
     /// Every removal path (cleanup timer, process exit, reducer effect) goes through here
     /// so leaked continuations / connections are impossible.
     private func removeSession(_ sessionId: String) {
+        CharacterEngine.shared.endSession(sessionId: sessionId)
+
         // Resume ALL pending continuations for this session
         drainPermissions(forSession: sessionId)
         drainQuestions(forSession: sessionId)
@@ -887,7 +924,7 @@ final class AppState {
         // sweep so concurrent in-flight tools stay queued (tested by
         // testPostToolUseDoesNotAffectUnrelatedQueueEntries).
         if wasWaiting {
-            let en = EventNormalizer.normalize(event.eventName)
+            let en = EventNormalizer.normalizeName(event.eventName)
             // Events that should NOT clear waiting state
             let keepWaiting: Set<String> = ["Notification", "SessionStart", "SessionEnd", "PreCompact"]
             let skipBlanketDrain = surgicallyDrained && permissionCountAfter > 0
@@ -929,7 +966,7 @@ final class AppState {
         // Handle the "else if activeSessionId == sessionId → mostActive" edge case
         // (reducer can't check activeSessionId since it's AppState-local)
         if sessions[sessionId]?.status == .idle && activeSessionId == sessionId {
-            let eventName = EventNormalizer.normalize(event.eventName)
+            let eventName = EventNormalizer.normalizeName(event.eventName)
             if eventName != "Stop" {
                 activeSessionId = mostActiveSessionId()
             }
@@ -938,6 +975,25 @@ final class AppState {
         scheduleSave()
         startRotationIfNeeded()
         refreshDerivedState()
+
+        // Route to CharacterEngine AFTER existing mutation so snapshot is up-to-date
+        routeToCharacterEngine(event: event, sessionId: sessionId)
+    }
+
+    private func routeToCharacterEngine(event: HookEvent, sessionId: String) {
+        let session = sessions[sessionId]
+        let toolHistory = session?.toolHistory ?? []
+        let successCount = toolHistory.filter { $0.success }.count
+        let totalTools = toolHistory.count
+        let rate = totalTools > 0 ? Double(successCount) / Double(totalTools) : 1.0
+        let ctx = CharacterSessionContext(
+            source: session?.source,
+            toolSuccessRate: rate,
+            totalTools: totalTools,
+            activeSessionCount: activeSessionCount,
+            hasActiveSession: activeSessionCount > 0
+        )
+        CharacterEngine.shared.handle(event: event, sessionContext: ctx)
     }
 
     func removeRemoteSessions(hostId: String) {

@@ -91,6 +91,18 @@ final class L10nTests: XCTestCase {
         }
     }
 
+    func testHungerDescriptionDoesNotExposeInternalHookNames() {
+        let availableLanguages = ["en", "zh", "ja", "ko", "tr"]
+
+        for lang in availableLanguages {
+            L10n.shared.language = lang
+            let description = L10n.shared["character.vital.hunger.desc"]
+
+            XCTAssertFalse(description.contains("UserPromptSubmit"), "Language '\(lang)' exposes an internal hook")
+            XCTAssertFalse(description.contains("SessionStart"), "Language '\(lang)' exposes an internal hook")
+        }
+    }
+
     func testTurkishNumericPlaceholdersWork() {
         L10n.shared.language = "tr"
 

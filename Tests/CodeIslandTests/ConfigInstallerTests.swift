@@ -112,6 +112,31 @@ final class ConfigInstallerTests: XCTestCase {
         XCTAssertEqual(notificationTimeout, 600, "Kimi max timeout is 600")
     }
 
+    func testCodexBuiltInHooksIncludePermissionRequest() throws {
+        let codex = try XCTUnwrap(ConfigInstaller.allCLIs.first { $0.source == "codex" })
+        let events = codex.events.map { $0.0 }
+
+        XCTAssertTrue(events.contains("PermissionRequest"))
+    }
+
+    func testClaudeFormatBuiltInHooksIncludePermissionRequest() {
+        let missing = ConfigInstaller.allCLIs
+            .filter { $0.format == .claude }
+            .filter { cli in !cli.events.contains { $0.0 == "PermissionRequest" } }
+            .map(\.source)
+
+        XCTAssertEqual(missing, [])
+    }
+
+    func testClaudeFormatBuiltInHooksIncludeToolFailureEvent() {
+        let missing = ConfigInstaller.allCLIs
+            .filter { $0.format == .claude }
+            .filter { cli in !cli.events.contains { $0.0 == "PostToolUseFailure" } }
+            .map(\.source)
+
+        XCTAssertEqual(missing, [])
+    }
+
     /// Hermetic integration test: uses a temporary directory instead of touching ~/.kimi/config.toml.
     func testInstallKimiHooksIntegration() throws {
         let fm = FileManager.default
@@ -330,6 +355,36 @@ hooks:
         XCTAssertTrue(script.contains("TRAECLI_EVENTS"))
         XCTAssertTrue(script.contains("\"session_start\""))
         XCTAssertTrue(script.contains("\"session_end\""))
+    }
+
+    func testRemoteInstallerCodexHooksIncludeToolEvents() {
+        let host = RemoteHost(id: "host-1", name: "devbox", host: "example.com")
+
+        let script = RemoteInstaller.configureRemoteHooksScript(host: host)
+
+        XCTAssertTrue(script.contains("hooks[\"PreToolUse\"] = entry"))
+        XCTAssertTrue(script.contains("hooks[\"PostToolUse\"] = entry"))
+        XCTAssertTrue(script.contains("hooks[\"PermissionRequest\"] = permission_entry"))
+        XCTAssertTrue(script.contains("hooks[\"SessionEnd\"] = entry"))
+    }
+
+    func testRemoteInstallerClaudeLikeHooksIncludeToolEvents() {
+        let host = RemoteHost(id: "host-1", name: "devbox", host: "example.com")
+
+        let script = RemoteInstaller.configureRemoteHooksScript(host: host)
+
+        XCTAssertEqual(script.components(separatedBy: "hooks[\"PreToolUse\"] = with_matcher").count - 1, 2)
+        XCTAssertEqual(script.components(separatedBy: "hooks[\"PostToolUse\"] = with_matcher").count - 1, 2)
+        XCTAssertEqual(script.components(separatedBy: "hooks[\"PostToolUseFailure\"] = with_matcher").count - 1, 2)
+    }
+
+    func testRemoteInstallerClaudeLikeHooksIncludeSubagentEvents() {
+        let host = RemoteHost(id: "host-1", name: "devbox", host: "example.com")
+
+        let script = RemoteInstaller.configureRemoteHooksScript(host: host)
+
+        XCTAssertEqual(script.components(separatedBy: "hooks[\"SubagentStart\"] = without_matcher").count - 1, 2)
+        XCTAssertEqual(script.components(separatedBy: "hooks[\"SubagentStop\"] = without_matcher").count - 1, 2)
     }
 
     func testRemoteTraecliPermissionRequestRoutesAsPermissionAndUsesRemoteSessionNamespace() async throws {

@@ -60,7 +60,10 @@ private let sidebarGroups: [SidebarGroup] = [
 
 struct SettingsView: View {
     @ObservedObject private var l10n = L10n.shared
-    @State private var selectedPage: SettingsPage = .general
+    @State private var selectedPage: SettingsPage = SettingsView.pendingPage ?? .general
+
+    /// Static bridge: set before calling show() to navigate to a specific page on open.
+    static var pendingPage: SettingsPage? = nil
 
     var body: some View {
         NavigationSplitView {
@@ -86,7 +89,7 @@ struct SettingsView: View {
                 case .general: GeneralPage()
                 case .behavior: BehaviorPage()
                 case .appearance: AppearancePage()
-                case .mascots: MascotsPage()
+                case .mascots: MascotsTabWrapper()
                 case .sound: SoundPage()
                 case .shortcuts: ShortcutsPage()
                 case .remote: RemoteHostsPage()
@@ -96,6 +99,38 @@ struct SettingsView: View {
             }
         }
         .toolbar(removing: .sidebarToggle)
+    }
+}
+
+// MARK: - Mascots Tab Wrapper (Appearance | Status & Stats)
+
+private struct MascotsTabWrapper: View {
+    @ObservedObject private var l10n = L10n.shared
+    @State private var selectedTab = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $selectedTab) {
+                Text(l10n["character.tab.appearance"]).tag(0)
+                Text(l10n["character.tab.stats"]).tag(1)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
+
+            if selectedTab == 0 {
+                MascotsPage()
+            } else {
+                CharacterStatsPage()
+            }
+        }
+        .onAppear {
+            if let tab = SettingsWindowController.pendingMascotsTab {
+                selectedTab = tab
+                SettingsWindowController.pendingMascotsTab = nil
+            }
+        }
     }
 }
 
@@ -872,9 +907,33 @@ private struct AppearancePreview: View {
 
 // MARK: - Mascots Page
 
+/// Unified preview state: either an agent status (processing/idle/approval) or one of
+/// the 5 mood overlays. Picking a mood implies status == .idle (mood only renders in idle).
+private enum PreviewState: Hashable {
+    case status(AgentStatus)
+    case mood(MascotMood)
+
+    var status: AgentStatus {
+        switch self {
+        case .status(let s): return s
+        case .mood:          return .idle
+        }
+    }
+    var mood: MascotMood {
+        switch self {
+        case .status:        return .neutral
+        case .mood(let m):   return m
+        }
+    }
+    var isMood: Bool {
+        if case .mood = self { return true }
+        return false
+    }
+}
+
 private struct MascotsPage: View {
     @ObservedObject private var l10n = L10n.shared
-    @State private var previewStatus: AgentStatus = .processing
+    @State private var previewState: PreviewState = .status(.processing)
     @AppStorage(SettingsKey.mascotSpeed) private var mascotSpeed = SettingsDefaults.mascotSpeed
     @AppStorage(SettingsKey.defaultSource) private var defaultSource = SettingsDefaults.defaultSource
 
@@ -899,15 +958,30 @@ private struct MascotsPage: View {
         ("OpBot", "opencode", "OpenCode", Color(red: 0.55, green: 0.55, blue: 0.57)),
     ]
 
+    /// Mascot list filtered by current preview state. When a mood is selected, only
+    /// mascots that have implemented mood scenes show up — otherwise the preview
+    /// would silently fall back to the default idle scene and look broken.
+    private var visibleMascots: [(name: String, source: String, desc: String, color: Color)] {
+        if previewState.isMood {
+            return mascotList.filter { MascotView.moodSupportedSources.contains($0.source) }
+        }
+        return mascotList
+    }
+
     var body: some View {
         Form {
             Section {
-                Picker(l10n["preview_status"], selection: $previewStatus) {
-                    Text(l10n["processing"]).tag(AgentStatus.processing)
-                    Text(l10n["idle"]).tag(AgentStatus.idle)
-                    Text(l10n["waiting_approval"]).tag(AgentStatus.waitingApproval)
+                Picker(l10n["preview_status"], selection: $previewState) {
+                    Text(l10n["processing"]).tag(PreviewState.status(.processing))
+                    Text(l10n["idle"]).tag(PreviewState.status(.idle))
+                    Text(l10n["waiting_approval"]).tag(PreviewState.status(.waitingApproval))
+                    Text(l10n["character.mood.sick"]).tag(PreviewState.mood(.sick))
+                    Text(l10n["character.mood.tired"]).tag(PreviewState.mood(.tired))
+                    Text(l10n["character.mood.hungry"]).tag(PreviewState.mood(.hungry))
+                    Text(l10n["character.mood.sad"]).tag(PreviewState.mood(.sad))
+                    Text(l10n["character.mood.joyful"]).tag(PreviewState.mood(.joyful))
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
 
                 HStack {
                     Text(l10n["mascot_speed"])
@@ -934,13 +1008,14 @@ private struct MascotsPage: View {
             }
 
             Section {
-                ForEach(mascotList, id: \.source) { mascot in
+                ForEach(visibleMascots, id: \.source) { mascot in
                     MascotRow(
                         name: mascot.name,
                         source: mascot.source,
                         desc: mascot.desc,
                         color: mascot.color,
-                        status: previewStatus
+                        status: previewState.status,
+                        mood: previewState.mood
                     )
                 }
             }
@@ -955,6 +1030,7 @@ private struct MascotRow: View {
     let desc: String
     let color: Color
     let status: AgentStatus
+    var mood: MascotMood = .neutral
 
     var body: some View {
         HStack(spacing: 16) {
@@ -962,7 +1038,7 @@ private struct MascotRow: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color.black)
                     .frame(width: 56, height: 56)
-                MascotView(source: source, status: status, size: 40)
+                MascotView(source: source, status: status, mood: mood, size: 40)
             }
 
             VStack(alignment: .leading, spacing: 4) {

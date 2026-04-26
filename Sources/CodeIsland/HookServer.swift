@@ -123,7 +123,7 @@ class HookServer {
     ]
 
     static func routeKind(for event: HookEvent) -> RouteKind {
-        let normalizedEventName = EventNormalizer.normalize(event.eventName)
+        let normalizedEventName = EventNormalizer.normalizeName(event.eventName)
         if normalizedEventName == "PermissionRequest" {
             return .permission
         }

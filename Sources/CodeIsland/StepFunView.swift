@@ -5,6 +5,7 @@ import CodeIslandCore
 /// Dark teal #0D9488 with blocky pixel aesthetic matching the step-pattern logo.
 struct StepFunView: View {
     let status: AgentStatus
+    var mood: MascotMood = .neutral
     var size: CGFloat = 27
     var animated: Bool = true
     @State private var alive = false
@@ -24,7 +25,7 @@ struct StepFunView: View {
             switch status {
             case .idle:
                 if animated {
-                    sleepScene
+                    idleMoodScene
                 } else {
                     staticSleepScene
                 }
@@ -98,6 +99,272 @@ struct StepFunView: View {
         let legDy = dy * 0.3
         c.fill(Path(v.r(5.5, 14, 1, 2, dy: legDy)), with: .color(Self.bodyDk.opacity(0.7)))
         c.fill(Path(v.r(8.5, 14, 1, 2, dy: legDy)), with: .color(Self.bodyDk.opacity(0.7)))
+    }
+
+    // ── Idle mood dispatcher ──
+    @ViewBuilder
+    private var idleMoodScene: some View {
+        switch mood {
+        case .hungry:  hungryScene
+        case .tired:   tiredScene
+        case .sad:     sadScene
+        case .sick:    sickScene
+        case .joyful:  joyfulScene
+        case .neutral: sleepScene
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // MOOD SCENES — StepFunView (teal block)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // HUNGRY — wobbly block + wide mouth gap + stomach rumble + food emojis
+    private var hungryScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let float = sin(t * .pi * 2 / 4.0) * 1.5
+                let wobble = sin(t * 10) * 0.7
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, width: 6 + abs(float) * 0.4, opacity: 0.22)
+                    drawLegs(c, v: v, dy: float + wobble)
+                    drawBody(c, v: v, dy: float + wobble, squashX: 1 + wobble * 0.04, squashY: 1)
+                    // Wide open mouth on face area
+                    c.fill(Path(v.r(5.5, 11.5, 4, 1.5, dy: float + wobble)),
+                           with: .color(Color.black.opacity(0.70)))
+                    // Eyes wide open
+                    drawFace(c, v: v, dy: float + wobble, blinkPhase: 1.3)
+                    // Stomach rumble dots
+                    let rumble = sin(t * 18) * 0.5
+                    for i: CGFloat in [0, 1, 2] {
+                        c.fill(Path(v.r(4.5 + i * 2, 12.5 + rumble * 0.3, 0.8, 0.8, dy: float + wobble)),
+                               with: .color(Color(red: 1.0, green: 0.6, blue: 0.1).opacity(0.5)))
+                    }
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let foods = ["🍕", "🍔", "🍩", "🌮", "🍎"]
+                ZStack {
+                    ForEach(0..<5, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 2.0 + ci * 0.35
+                        let delay = ci * 0.6
+                        let p = max(0, ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle)
+                        let xOff = size * CGFloat(-0.28 + ci * 0.15 + sin(p * .pi) * 0.12)
+                        let yOff = -size * CGFloat(0.08 + p * 0.38)
+                        let op = p < 0.72 ? 0.9 : (1.0 - p) * 3.21 * 0.9
+                        Text(foods[i % foods.count])
+                            .font(.system(size: max(5, size * 0.19)))
+                            .opacity(op)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // TIRED — slow nod + half-closed eyes + large Zs (teal tint)
+    private var tiredScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let nodPhase = t.truncatingRemainder(dividingBy: 3.2) / 3.2
+                let nod: CGFloat = nodPhase < 0.6
+                    ? CGFloat(sin(nodPhase / 0.6 * .pi)) * 2.0
+                    : 0
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, opacity: 0.14)
+                    drawLegs(c, v: v, dy: nod)
+                    drawBody(c, v: v, dy: nod, squashX: 1.06, squashY: 0.90)
+                    // Half-closed eyes (dim)
+                    drawFace(c, v: v, dy: nod, blinkPhase: 0.18)
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.07)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<2, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 3.8 + ci * 0.6
+                        let delay = ci * 1.6
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let fontSize = max(7, size * CGFloat(0.22 + p * 0.10 + ci * 0.03))
+                        let op = p < 0.78 ? 0.72 : (1.0 - p) * 3.43 * 0.72
+                        let yOff = -size * CGFloat(0.10 + p * 0.40)
+                        let xOff = size * CGFloat(0.06 + ci * 0.12)
+                        Text("z")
+                            .font(.system(size: fontSize, weight: .black, design: .monospaced))
+                            .foregroundStyle(Color(red: 0.55, green: 0.65, blue: 1.0).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // SAD — cold blue overlay + dim body opacity + tears + sad brow
+    private var sadScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let float = sin(t * .pi * 2 / 4.5) * 0.5
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, opacity: 0.18)
+                    drawLegs(c, v: v, dy: float)
+                    var gctx = c
+                    gctx.opacity = 0.70
+                    drawBody(gctx, v: v, dy: float)
+                    drawFace(gctx, v: v, dy: float, blinkPhase: 0.6)
+                    // Cold blue overlay
+                    c.fill(Path(v.r(3, 7, 9, 7, dy: float)),
+                           with: .color(Color(red: 0.3, green: 0.5, blue: 0.9).opacity(0.12)))
+                    // Inverted V brow (sad)
+                    c.fill(Path(v.r(4.5, 8.5, 2, 0.7, dy: float)),
+                           with: .color(Self.bodyDk.opacity(0.7)))
+                    c.fill(Path(v.r(8.5, 8.5, 2, 0.7, dy: float)),
+                           with: .color(Self.bodyDk.opacity(0.7)))
+                    c.fill(Path(v.r(6.5, 7.8, 1, 0.7, dy: float)),
+                           with: .color(Self.bodyDk.opacity(0.7)))
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<2, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.8 + ci * 0.5
+                        let delay = ci * 0.85
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, phase)
+                        let yOff = size * CGFloat(0.04 + pp * 0.42)
+                        let xOff = size * CGFloat(-0.08 + ci * 0.18)
+                        let op = pp < 0.65 ? 0.80 : (1.0 - pp) * 2.29 * 0.80
+                        Circle()
+                            .fill(Color(red: 0.25, green: 0.55, blue: 1.0).opacity(op))
+                            .frame(width: size * 0.075, height: size * 0.12)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // SICK — green tint + irregular shake + X eyes + sweat drops
+    private var sickScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let shake = sin(t * 7) * 0.9 + sin(t * 13.5) * 0.5
+                let float = sin(t * .pi * 2 / 5.0) * 0.4
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    drawShadow(c, v: v, opacity: 0.15)
+                    drawLegs(c, v: v, dy: float)
+                    c.translateBy(x: shake * v.s, y: 0)
+                    // Green-tinted body
+                    let cx2: CGFloat = 7.5
+                    let bw: CGFloat = 9, bh: CGFloat = 7
+                    let bx = cx2 - bw / 2
+                    c.fill(Path(v.r(bx, 7, bw, bh, dy: float)),
+                           with: .color(Color(red: 0.4, green: 0.82, blue: 0.55).opacity(0.88)))
+                    // Step accents
+                    c.fill(Path(v.r(bx + bw - 2.5, 5.5, 2.5, 1.5, dy: float)),
+                           with: .color(Self.bodyLt.opacity(0.7)))
+                    c.fill(Path(v.r(bx + bw - 5, 5.5, 2.5, 1.5, dy: float)),
+                           with: .color(Self.bodyDk.opacity(0.7)))
+                    // X eyes
+                    let eyePositions: [(CGFloat, CGFloat)] = [(4.7, 9.6), (8.0, 9.6)]
+                    for (ex, ey) in eyePositions {
+                        c.fill(Path(v.r(ex,       ey,       0.7, 0.7, dy: float)), with: .color(Self.faceC))
+                        c.fill(Path(v.r(ex + 0.7, ey + 0.7, 0.7, 0.7, dy: float)), with: .color(Self.faceC))
+                        c.fill(Path(v.r(ex + 0.7, ey,       0.7, 0.7, dy: float)), with: .color(Self.faceC))
+                        c.fill(Path(v.r(ex,       ey + 0.7, 0.7, 0.7, dy: float)), with: .color(Self.faceC))
+                    }
+                    c.translateBy(x: -shake * v.s, y: 0)
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<3, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.6 + ci * 0.4
+                        let delay = ci * 0.55
+                        let p = max(0, ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle)
+                        let xOff = size * CGFloat(-0.15 + ci * 0.16)
+                        let yOff = size * CGFloat(0.08 + p * 0.35)
+                        let op = p < 0.6 ? 0.75 : (1.0 - p) * 1.875 * 0.75
+                        Circle()
+                            .fill(Color(red: 0.4, green: 0.9, blue: 0.6).opacity(op))
+                            .frame(width: size * 0.065, height: size * 0.09)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // JOYFUL — bouncing block + bright face + dual sparkle ring
+    private var joyfulScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let jumpPhase = t.truncatingRemainder(dividingBy: 1.2) / 1.2
+                let jumpY: CGFloat = jumpPhase < 0.35
+                    ? CGFloat(-sin(jumpPhase / 0.35 * .pi) * 2.8)
+                    : 0
+                let squashY: CGFloat = jumpPhase > 0.38 && jumpPhase < 0.52
+                    ? CGFloat(1.0 - (jumpPhase - 0.38) / 0.14 * 0.12)
+                    : 1.0
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 15, svgH: 12, svgY0: 4)
+                    let shadowW: CGFloat = 6 + abs(jumpY) * 0.4
+                    let shadowOp: Double = max(0.10, 0.22 - Double(abs(jumpY)) * 0.025)
+                    drawShadow(c, v: v, width: shadowW, opacity: shadowOp)
+                    drawLegs(c, v: v, dy: jumpY)
+                    drawBody(c, v: v, dy: jumpY, squashX: 1.0, squashY: squashY)
+                    drawFace(c, v: v, dy: jumpY, blinkPhase: 1.2)
+                }
+            }
+            TimelineView(.periodic(from: .now, by: 0.04)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<6, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.3 + ci * 0.15
+                        let delay = ci * 0.22
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let angle = ci * 60.0 * .pi / 180.0
+                        let r = size * CGFloat(0.28 + p * 0.16)
+                        let op = p < 0.60 ? 1.0 : (1.0 - p) * 2.5
+                        Text("✦")
+                            .font(.system(size: max(5, size * 0.155)))
+                            .foregroundStyle(Color(red: 1.0, green: 0.85, blue: 0.0).opacity(op))
+                            .offset(x: r * CGFloat(cos(angle)), y: r * CGFloat(sin(angle)) - size * 0.08)
+                    }
+                    ForEach(0..<6, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.8 + ci * 0.18
+                        let delay = ci * 0.30 + 0.11
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let angle = (ci * 60.0 + 30.0) * .pi / 180.0
+                        let r = size * CGFloat(0.38 + p * 0.14)
+                        let op = p < 0.55 ? 0.85 : (1.0 - p) * 1.89 * 0.85
+                        Text("✦")
+                            .font(.system(size: max(4, size * 0.10)))
+                            .foregroundStyle(Color(red: 1.0, green: 1.0, blue: 0.6).opacity(op))
+                            .offset(x: r * CGFloat(cos(angle)), y: r * CGFloat(sin(angle)) - size * 0.06)
+                    }
+                }
+            }
+        }
     }
 
     private func sleepCanvas(t: Double) -> some View {

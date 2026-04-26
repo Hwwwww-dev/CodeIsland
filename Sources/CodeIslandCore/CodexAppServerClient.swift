@@ -45,7 +45,7 @@ public enum CodexRequestID: Hashable {
 
 /// Lightweight, untyped wrapper around `Any` so message records round-trip
 /// through `Equatable` without forcing the full schema to be modeled here.
-public enum AnyCodableLike: Equatable {
+public enum AnyCodableLike: Equatable, Sendable {
     case null
     case bool(Bool)
     case int(Int64)

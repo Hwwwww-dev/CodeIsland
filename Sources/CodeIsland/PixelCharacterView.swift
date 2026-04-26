@@ -5,6 +5,7 @@ import CodeIslandCore
 /// Renders SVG rects proportionally via Canvas + TimelineView animations.
 struct ClawdView: View {
     let status: AgentStatus
+    var mood: MascotMood = .neutral
     var size: CGFloat = 27
     var animated: Bool = true
     @State private var alive = false
@@ -23,7 +24,7 @@ struct ClawdView: View {
             switch status {
             case .idle:
                 if animated {
-                    sleepScene
+                    idleMoodScene
                 } else {
                     staticSleepScene
                 }
@@ -37,6 +38,19 @@ struct ClawdView: View {
         .onChange(of: status) {
             alive = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { alive = true }
+        }
+    }
+
+    /// Dispatches to the correct idle scene based on mood.
+    @ViewBuilder
+    private var idleMoodScene: some View {
+        switch mood {
+        case .hungry:  hungryScene
+        case .tired:   tiredScene
+        case .sad:     sadScene
+        case .sick:    sickScene
+        case .joyful:  joyfulScene
+        case .neutral: sleepScene
         }
     }
 
@@ -383,6 +397,280 @@ struct ClawdView: View {
                        with: .color(Self.alertC.opacity(bangOpacity)))
                 c.fill(Path(v.r(bx, by + 4.0 * bangScale, bw, 1.5 * bangScale, dy: 0)),
                        with: .color(Self.alertC.opacity(bangOpacity)))
+            }
+        }
+    }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // MOOD SCENES — variants of sleep for idle states
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    // HUNGRY — big shake + wide open mouth + food emojis + rumble belly dots
+    private var hungryScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let phase = t.truncatingRemainder(dividingBy: 4.5) / 4.5
+                let breathe: CGFloat = phase < 0.4 ? sin(phase / 0.4 * .pi) : 0
+                // Big hungry shake: two frequencies
+                let shake: CGFloat = sin(t * 14) * 0.9 + sin(t * 7.5) * 0.5
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 17, svgH: 7, svgY0: 9)
+                    c.translateBy(x: shake * v.s, y: 0)
+                    drawSleeping(c, v: v, breathe: breathe)
+                    // Wide open mouth (hunger gape): larger block
+                    c.fill(Path(v.r(5, 13.0, 5, 1.5)),
+                           with: .color(Self.eyeC.opacity(0.75)))
+                    // Rumble belly dots pulsing
+                    let rumble: CGFloat = sin(t * 22) > 0 ? 0.5 : 0.0
+                    for dx: CGFloat in [0, 1.5, 3] {
+                        c.fill(Path(v.r(5.5 + dx, 13.8, 0.7, 0.7)),
+                               with: .color(Color(red: 1.0, green: 0.55, blue: 0.1).opacity(0.45 + rumble * 0.35)))
+                    }
+                    c.translateBy(x: -shake * v.s, y: 0)
+                }
+            }
+            // Multiple food emojis floating up (5 types)
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let foods = ["🍕", "🍔", "🍩", "🌮", "🍎"]
+                ZStack {
+                    ForEach(0..<5, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 2.1 + ci * 0.38
+                        let delay = ci * 0.55
+                        let p = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, p)
+                        let xOff = size * CGFloat(-0.25 + ci * 0.14 + sin(pp * .pi * 1.5) * 0.10)
+                        let yOff = -size * CGFloat(0.05 + pp * 0.42)
+                        let op = pp < 0.70 ? 0.92 : (1.0 - pp) * 3.07 * 0.92
+                        Text(foods[i % foods.count])
+                            .font(.system(size: max(5, size * 0.20)))
+                            .opacity(op)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // TIRED — nodding down + half-closed eye bars + two slow Zs
+    private var tiredScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.07)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                // Slow shallow breathe
+                let breathPhase = t.truncatingRemainder(dividingBy: 5.5) / 5.5
+                let breathe: CGFloat = breathPhase < 0.3 ? sin(breathPhase / 0.3 * .pi) * 0.45 : 0
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 17, svgH: 7, svgY0: 9)
+                    drawSleeping(c, v: v, breathe: breathe)
+                    // Extra droopy ear lines (wider blocks, more visible)
+                    c.fill(Path(v.r(0.5, 7.8, 2.5, 1.0)), with: .color(Self.bodyC.opacity(0.65)))
+                    c.fill(Path(v.r(12.0, 7.8, 2.5, 1.0)), with: .color(Self.bodyC.opacity(0.65)))
+                    // Half-closed eye slits (on top of shut eyes in drawSleeping)
+                    let eyeY: CGFloat = 12.2 - breathe * 2.5
+                    // Thinner slit = half-open eyelid
+                    c.fill(Path(v.r(3, eyeY + 0.5, 2.5, 0.5)), with: .color(Self.bodyC.opacity(0.6)))
+                    c.fill(Path(v.r(9.5, eyeY + 0.5, 2.5, 0.5)), with: .color(Self.bodyC.opacity(0.6)))
+                }
+            }
+            // Two staggered Zs (bigger font, farther travel)
+            TimelineView(.periodic(from: .now, by: 0.07)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<2, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 3.6 + ci * 0.7
+                        let delay = ci * 1.5
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let fontSize = max(7, size * CGFloat(0.23 + p * 0.11 + ci * 0.04))
+                        let op = p < 0.75 ? 0.74 : (1.0 - p) * 2.96 * 0.74
+                        let yOff = -size * CGFloat(0.10 + p * 0.44)
+                        let xOff = size * CGFloat(0.06 + ci * 0.14)
+                        Text("z")
+                            .font(.system(size: fontSize, weight: .black, design: .monospaced))
+                            .foregroundStyle(Color(red: 0.52, green: 0.62, blue: 1.0).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // SAD — cold-dim body + two tear streams + frown mouth mark
+    private var sadScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.06)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let phase = t.truncatingRemainder(dividingBy: 4.5) / 4.5
+                let breathe: CGFloat = phase < 0.4 ? sin(phase / 0.4 * .pi) * 0.55 : 0
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 17, svgH: 7, svgY0: 9)
+                    // Cold-dim body (opacity + slight blue tint on torso)
+                    var gctx = c
+                    gctx.opacity = 0.72
+                    drawSleeping(gctx, v: v, breathe: breathe)
+                    // Frown: downward V below eyes
+                    let eyeY: CGFloat = 12.2 - breathe * 2.5
+                    c.fill(Path(v.r(5.0, eyeY + 1.5, 1.5, 0.7)), with: .color(Self.eyeC.opacity(0.55)))
+                    c.fill(Path(v.r(6.5, eyeY + 2.2, 2.0, 0.7)), with: .color(Self.eyeC.opacity(0.55)))
+                    c.fill(Path(v.r(8.5, eyeY + 1.5, 1.5, 0.7)), with: .color(Self.eyeC.opacity(0.55)))
+                    // Cold blue wash on torso
+                    let puff = max(0, breathe) * 0.25
+                    let torsoH: CGFloat = 5 * (1.0 + puff)
+                    let torsoY: CGFloat = 15 - torsoH
+                    c.fill(Path(v.r(1, torsoY, 13, torsoH)),
+                           with: .color(Color(red: 0.25, green: 0.45, blue: 0.90).opacity(0.12)))
+                }
+            }
+            // Two staggered tear streams (longer fall, more visible)
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<2, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.7 + ci * 0.5
+                        let delay = ci * 0.80
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, phase)
+                        let yOff = size * CGFloat(0.04 + pp * 0.46)   // longer fall
+                        let xOff = size * CGFloat(-0.08 + ci * 0.20)
+                        let op = pp < 0.62 ? 0.82 : (1.0 - pp) * 2.16 * 0.82
+                        Circle()
+                            .fill(Color(red: 0.22, green: 0.50, blue: 1.0).opacity(op))
+                            .frame(width: size * 0.082, height: size * 0.13)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+        }
+    }
+
+    // SICK — green body tint + big irregular shake + sweat drops (3) + more fever dots
+    private var sickScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                let phase = t.truncatingRemainder(dividingBy: 4.5) / 4.5
+                let breathe: CGFloat = phase < 0.4 ? sin(phase / 0.4 * .pi) * 0.35 : 0
+                // Irregular sick shake
+                let shake: CGFloat = sin(t * 8.5) * 1.0 + sin(t * 14) * 0.45
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 17, svgH: 7, svgY0: 9)
+                    c.translateBy(x: shake * v.s, y: 0)
+                    // Green-tinted body (opacity reduction + green tint overlay)
+                    var gctx = c
+                    gctx.opacity = 0.78
+                    drawSleeping(gctx, v: v, breathe: breathe)
+                    // Green wash over torso
+                    let puff = max(0, breathe) * 0.25
+                    let torsoH: CGFloat = 5 * (1.0 + puff)
+                    let torsoY: CGFloat = 15 - torsoH
+                    c.fill(Path(v.r(1, torsoY, 13, torsoH)),
+                           with: .color(Color(red: 0.2, green: 0.78, blue: 0.3).opacity(0.18)))
+                    // X eyes over the existing shut-eye bars
+                    let eyeY: CGFloat = 12.2 - puff * 2.5
+                    // Left X
+                    c.fill(Path(v.r(3.0, eyeY,       1.0, 1.0)), with: .color(Self.eyeC.opacity(0.85)))
+                    c.fill(Path(v.r(3.8, eyeY + 0.8, 1.0, 1.0)), with: .color(Self.eyeC.opacity(0.85)))
+                    c.fill(Path(v.r(3.8, eyeY,       1.0, 1.0)), with: .color(Self.eyeC.opacity(0.85)))
+                    c.fill(Path(v.r(3.0, eyeY + 0.8, 1.0, 1.0)), with: .color(Self.eyeC.opacity(0.85)))
+                    // Right X
+                    c.fill(Path(v.r(9.5,  eyeY,       1.0, 1.0)), with: .color(Self.eyeC.opacity(0.85)))
+                    c.fill(Path(v.r(10.3, eyeY + 0.8, 1.0, 1.0)), with: .color(Self.eyeC.opacity(0.85)))
+                    c.fill(Path(v.r(10.3, eyeY,       1.0, 1.0)), with: .color(Self.eyeC.opacity(0.85)))
+                    c.fill(Path(v.r(9.5,  eyeY + 0.8, 1.0, 1.0)), with: .color(Self.eyeC.opacity(0.85)))
+                    // Fever dots above head (4 dots, bigger)
+                    for i: CGFloat in [0, 1, 2, 3] {
+                        let dotX = v.r(4.0 + i * 2.2, 7.2, 1.4, 1.4)
+                        c.fill(Path(ellipseIn: dotX),
+                               with: .color(Color(red: 0.95, green: 0.22, blue: 0.32).opacity(0.82)))
+                    }
+                    c.translateBy(x: -shake * v.s, y: 0)
+                }
+            }
+            // 3 staggered sweat drops
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    ForEach(0..<3, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.5 + ci * 0.45
+                        let delay = ci * 0.52
+                        let p = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let pp = max(0, p)
+                        let xOff = size * CGFloat(-0.18 + ci * 0.20)
+                        let yOff = size * CGFloat(0.06 + pp * 0.38)
+                        let op = pp < 0.58 ? 0.80 : (1.0 - pp) * 1.905 * 0.80
+                        Circle()
+                            .fill(Color(red: 0.35, green: 0.88, blue: 0.55).opacity(op))
+                            .frame(width: size * 0.070, height: size * 0.10)
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
+            }
+            // Stronger green overlay (more visible sick tint)
+            Rectangle()
+                .fill(Color(red: 0.2, green: 0.85, blue: 0.2).opacity(0.09))
+                .frame(width: size, height: size)
+                .allowsHitTesting(false)
+        }
+    }
+
+    // JOYFUL — bouncy breathe + dense 12-particle sparkle ring
+    private var joyfulScene: some View {
+        ZStack {
+            TimelineView(.periodic(from: .now, by: 0.05)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                // Bouncy exaggerated breathe
+                let phase = t.truncatingRemainder(dividingBy: 3.0) / 3.0
+                let breathe: CGFloat = phase < 0.45 ? sin(phase / 0.45 * .pi) * 1.4 : 0
+                Canvas { c, sz in
+                    let v = V(sz, svgW: 17, svgH: 7, svgY0: 9)
+                    drawSleeping(c, v: v, breathe: breathe)
+                }
+            }
+            // Dense sparkle ring: 12 particles (inner 6 gold + outer 6 white)
+            TimelineView(.periodic(from: .now, by: 0.04)) { ctx in
+                let t = ctx.date.timeIntervalSinceReferenceDate * speed
+                ZStack {
+                    // Inner ring: 6 bright gold ✦
+                    ForEach(0..<6, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.2 + ci * 0.14
+                        let delay = ci * 0.20
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let angle = ci * 60.0 * .pi / 180.0
+                        let r = size * CGFloat(0.26 + p * 0.18)
+                        let xOff = r * CGFloat(cos(angle))
+                        let yOff = r * CGFloat(sin(angle)) - size * 0.10
+                        let op = p < 0.58 ? 1.0 : (1.0 - p) * 2.38 * 1.0
+                        Text("✦")
+                            .font(.system(size: max(5, size * 0.16)))
+                            .foregroundStyle(Color(red: 1.0, green: 0.82, blue: 0.0).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                    // Outer ring: 6 smaller white-yellow ✦ offset by 30°
+                    ForEach(0..<6, id: \.self) { i in
+                        let ci = Double(i)
+                        let cycle = 1.7 + ci * 0.20
+                        let delay = ci * 0.28 + 0.10
+                        let phase = ((t - delay).truncatingRemainder(dividingBy: cycle)) / cycle
+                        let p = max(0, phase)
+                        let angle = (ci * 60.0 + 30.0) * .pi / 180.0
+                        let r = size * CGFloat(0.38 + p * 0.15)
+                        let xOff = r * CGFloat(cos(angle))
+                        let yOff = r * CGFloat(sin(angle)) - size * 0.07
+                        let op = p < 0.52 ? 0.88 : (1.0 - p) * 1.83 * 0.88
+                        Text("✦")
+                            .font(.system(size: max(4, size * 0.11)))
+                            .foregroundStyle(Color(red: 1.0, green: 1.0, blue: 0.65).opacity(op))
+                            .offset(x: xOff, y: yOff)
+                    }
+                }
             }
         }
     }

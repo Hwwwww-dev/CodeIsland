@@ -270,6 +270,65 @@ final class L10n: ObservableObject {
         "scroll_for_more": "Scroll for more",
         "scroll_hidden": "more below",
         "lines": "lines",
+
+        // Character / Entertainment System
+        "character.tab.appearance": "Appearance",
+        "character.tab.stats": "Status & Stats",
+        "character.mood.sick": "Sick",
+        "character.mood.tired": "Tired",
+        "character.mood.hungry": "Hungry",
+        "character.mood.sad": "Sad",
+        "character.mood.joyful": "Joyful",
+        "character.vital.hunger": "HUNGER",
+        "character.vital.mood": "MOOD",
+        "character.vital.energy": "ENERGY",
+        "character.vital.health": "HEALTH",
+        "character.cyber.focus": "FOCUS",
+        "character.cyber.diligence": "DILIGENCE",
+        "character.cyber.collab": "COLLAB",
+        "character.cyber.taste": "TASTE",
+        "character.cyber.curiosity": "CURIOSITY",
+        "character.stats.totalSessions": "Total Sessions",
+        "character.stats.totalToolCalls": "Total Tool Calls",
+        "character.stats.totalActive": "Total Active Time",
+        "character.stats.todayActive": "Today Active",
+        "character.stats.streak": "Streak",
+        "character.stats.overwork": "Overwork",
+        "character.stats.toolRanking": "Tool Ranking",
+        "character.stats.cliRanking": "CLI Tool-Call Ranking",
+        "character.stats.last7Days": "Last 7 Days Activity",
+        "character.settings.pause": "Pause Statistics",
+        "character.settings.rebuild": "Rebuild Statistics",
+        "character.settings.reset": "Reset Character Data",
+        "character.settings.resetConfirm": "This deletes all stats and cannot be undone.",
+        "character.panel.title": "ANGEL",
+
+        // Character section headers
+        "character.section.vitals": "Vitals",
+        "character.section.cyber": "Cyber Attributes",
+        "character.section.lifetime": "Lifetime Statistics",
+        "character.section.controls": "Controls",
+
+        // Vital descriptions
+        "character.vital.hunger.desc": "Drops over time. Real work earns a meal, and longer, denser sessions feed it more.",
+        "character.vital.mood.desc": "Fresh prompts lift it. Clean finishes feel good, while failed tools and denied permissions take the edge off.",
+        "character.vital.energy.desc": "Recovers while idle and rebounds faster when drained. Active work pauses recovery, and heavy tool use chips away at it.",
+        "character.vital.health.desc": "Tracks the day's rhythm. Steady focus helps, while long idle stretches or repeated overwork drag it down.",
+
+        // Cyber descriptions
+        "character.cyber.focus.desc": "Built through reliable tool work and sustained stretches of attention.",
+        "character.cyber.diligence.desc": "Grows when it edits files, writes changes, and gets shell work done.",
+        "character.cyber.collab.desc": "Rises when you answer prompts, handle permissions, and keep the workflow moving.",
+        "character.cyber.taste.desc": "Improves when sessions stay accurate, efficient, and finish cleanly.",
+        "character.cyber.curiosity.desc": "Grows by reading code, searching broadly, and checking the web when needed.",
+
+        // Stats formatting
+        "character.stats.streakSuffix": " days",
+        "character.stats.last7days.today": "Today",
+        "character.stats.last7days.empty": "No activity in the last 7 days.",
+
+        // Common
+        "common.cancel": "Cancel",
     ]
 
     private static let zh: [String: String] = [
@@ -504,6 +563,65 @@ final class L10n: ObservableObject {
         "scroll_for_more": "向下滚动查看更多",
         "scroll_hidden": "个未显示",
         "lines": "行",
+
+        // 角色系统
+        "character.tab.appearance": "形象",
+        "character.tab.stats": "状态与统计",
+        "character.mood.sick": "生病",
+        "character.mood.tired": "疲惫",
+        "character.mood.hungry": "饥饿",
+        "character.mood.sad": "难过",
+        "character.mood.joyful": "开心",
+        "character.vital.hunger": "饥饿",
+        "character.vital.mood": "心情",
+        "character.vital.energy": "活力",
+        "character.vital.health": "健康",
+        "character.cyber.focus": "专注度",
+        "character.cyber.diligence": "勤奋值",
+        "character.cyber.collab": "协作度",
+        "character.cyber.taste": "代码品味",
+        "character.cyber.curiosity": "好奇心",
+        "character.stats.totalSessions": "总会话数",
+        "character.stats.totalToolCalls": "总工具调用",
+        "character.stats.totalActive": "累计活跃时长",
+        "character.stats.todayActive": "今日活跃",
+        "character.stats.streak": "连续活跃天数",
+        "character.stats.overwork": "过劳天数",
+        "character.stats.toolRanking": "工具排行",
+        "character.stats.cliRanking": "CLI 调用排行",
+        "character.stats.last7Days": "近 7 天活跃",
+        "character.settings.pause": "暂停统计",
+        "character.settings.rebuild": "重建统计",
+        "character.settings.reset": "重置角色数据",
+        "character.settings.resetConfirm": "此操作将删除所有统计数据且无法撤销。",
+        "character.panel.title": "ANGEL",
+
+        // 角色区块标题
+        "character.section.vitals": "生命属性",
+        "character.section.cyber": "赛博属性",
+        "character.section.lifetime": "累计统计",
+        "character.section.controls": "控制",
+
+        // 生命属性描述
+        "character.vital.hunger.desc": "会随着时间慢慢变饿。真正干活就能补回来，投入越扎实，吃得越饱。",
+        "character.vital.mood.desc": "新提示会提气，顺利收工会更开心。工具失败和权限被拒都会拉低心情。",
+        "character.vital.energy.desc": "空闲时会慢慢恢复，越疲惫回得越快。工作中不会回血，工具用得越密越耗电。",
+        "character.vital.health.desc": "看一天的工作节奏。稳定投入会养回来，长期发呆或连续过劳都会往下掉。",
+
+        // 赛博属性描述
+        "character.cyber.focus.desc": "靠稳定可靠的工具调用和持续专注一点点攒起来。",
+        "character.cyber.diligence.desc": "编辑文件、写入结果、处理命令行工作，都会把勤奋值磨出来。",
+        "character.cyber.collab.desc": "回应提示、处理权限、把流程顺着往前推，都会增加协作度。",
+        "character.cyber.taste.desc": "工具用得准、节奏稳、收尾干净，代码品味就会往上涨。",
+        "character.cyber.curiosity.desc": "读代码、做搜索、上网核对信息，都会让好奇心继续长。",
+
+        // 统计格式
+        "character.stats.streakSuffix": " 天",
+        "character.stats.last7days.today": "今天",
+        "character.stats.last7days.empty": "最近 7 天无活跃记录。",
+
+        // 通用
+        "common.cancel": "取消",
     ]
 
     private static let ja: [String: String] = [
@@ -738,6 +856,65 @@ final class L10n: ObservableObject {
         "scroll_for_more": "さらに表示するにはスクロール",
         "scroll_hidden": "下にさらにあります",
         "lines": "行",
+
+        // キャラクターシステム
+        "character.tab.appearance": "外観",
+        "character.tab.stats": "状態と統計",
+        "character.mood.sick": "病気",
+        "character.mood.tired": "疲労",
+        "character.mood.hungry": "空腹",
+        "character.mood.sad": "悲しい",
+        "character.mood.joyful": "喜び",
+        "character.vital.hunger": "空腹",
+        "character.vital.mood": "気分",
+        "character.vital.energy": "活力",
+        "character.vital.health": "健康",
+        "character.cyber.focus": "集中力",
+        "character.cyber.diligence": "勤勉さ",
+        "character.cyber.collab": "協力度",
+        "character.cyber.taste": "コード品質",
+        "character.cyber.curiosity": "好奇心",
+        "character.stats.totalSessions": "総セッション数",
+        "character.stats.totalToolCalls": "ツール呼び出し総数",
+        "character.stats.totalActive": "累計アクティブ時間",
+        "character.stats.todayActive": "本日アクティブ",
+        "character.stats.streak": "連続アクティブ日数",
+        "character.stats.overwork": "過労日数",
+        "character.stats.toolRanking": "ツールランキング",
+        "character.stats.cliRanking": "CLI ツール呼び出しランキング",
+        "character.stats.last7Days": "過去7日間",
+        "character.settings.pause": "統計を一時停止",
+        "character.settings.rebuild": "統計を再構築",
+        "character.settings.reset": "キャラクターデータをリセット",
+        "character.settings.resetConfirm": "全データが削除され、元に戻せません。",
+        "character.panel.title": "ANGEL",
+
+        // キャラクターセクション見出し
+        "character.section.vitals": "バイタル",
+        "character.section.cyber": "サイバー属性",
+        "character.section.lifetime": "累計統計",
+        "character.section.controls": "コントロール",
+
+        // バイタル説明
+        "character.vital.hunger.desc": "時間とともに少しずつ減ります。きちんと働けば戻り、密度の高い作業ほどしっかり満たされます。",
+        "character.vital.mood.desc": "新しいプロンプトで気分が上がり、きれいに終えるとさらに良くなります。ツール失敗や権限拒否は気分を削ります。",
+        "character.vital.energy.desc": "待機中に回復し、消耗しているほど戻りが速くなります。作業中は止まり、ツールを詰めて使うほど減ります。",
+        "character.vital.health.desc": "その日の作業リズムを映します。安定した集中は回復につながり、長い空白や過労が続くと下がります。",
+
+        // サイバー属性説明
+        "character.cyber.focus.desc": "安定したツール運用と途切れない集中で積み上がります。",
+        "character.cyber.diligence.desc": "編集、書き込み、シェル作業を着実にこなすほど伸びます。",
+        "character.cyber.collab.desc": "プロンプトへの応答、権限対応、流れを止めないやり取りで高まります。",
+        "character.cyber.taste.desc": "精度が高く、無駄が少なく、後味の良いセッションで磨かれます。",
+        "character.cyber.curiosity.desc": "コードを読み、検索し、必要な情報を調べるほど育ちます。",
+
+        // 統計フォーマット
+        "character.stats.streakSuffix": " 日",
+        "character.stats.last7days.today": "今日",
+        "character.stats.last7days.empty": "過去 7 日間の活動記録がありません。",
+
+        // 共通
+        "common.cancel": "キャンセル",
     ]
 
     private static let ko: [String: String] = [
@@ -972,6 +1149,65 @@ final class L10n: ObservableObject {
         "scroll_for_more": "더 보려면 스크롤",
         "scroll_hidden": "아래에 더 있음",
         "lines": "줄",
+
+        // 캐릭터 시스템
+        "character.tab.appearance": "외형",
+        "character.tab.stats": "상태 및 통계",
+        "character.mood.sick": "아픔",
+        "character.mood.tired": "피곤",
+        "character.mood.hungry": "배고픔",
+        "character.mood.sad": "슬픔",
+        "character.mood.joyful": "기쁨",
+        "character.vital.hunger": "배고픔",
+        "character.vital.mood": "기분",
+        "character.vital.energy": "활력",
+        "character.vital.health": "건강",
+        "character.cyber.focus": "집중력",
+        "character.cyber.diligence": "성실도",
+        "character.cyber.collab": "협업도",
+        "character.cyber.taste": "코드 품질",
+        "character.cyber.curiosity": "호기심",
+        "character.stats.totalSessions": "총 세션 수",
+        "character.stats.totalToolCalls": "총 도구 호출",
+        "character.stats.totalActive": "누적 활성 시간",
+        "character.stats.todayActive": "오늘 활성",
+        "character.stats.streak": "연속 활성일",
+        "character.stats.overwork": "과로 일수",
+        "character.stats.toolRanking": "도구 순위",
+        "character.stats.cliRanking": "CLI 도구 호출 순위",
+        "character.stats.last7Days": "최근 7일 활동",
+        "character.settings.pause": "통계 일시 중지",
+        "character.settings.rebuild": "통계 재구성",
+        "character.settings.reset": "캐릭터 데이터 초기화",
+        "character.settings.resetConfirm": "모든 통계가 삭제되며 되돌릴 수 없습니다.",
+        "character.panel.title": "ANGEL",
+
+        // 캐릭터 섹션 헤더
+        "character.section.vitals": "바이탈",
+        "character.section.cyber": "사이버 속성",
+        "character.section.lifetime": "누적 통계",
+        "character.section.controls": "제어",
+
+        // 바이탈 설명
+        "character.vital.hunger.desc": "시간이 지나면 서서히 줄어듭니다. 제대로 일하면 다시 차오르고, 밀도 높은 작업일수록 더 든든하게 채워집니다.",
+        "character.vital.mood.desc": "새 프롬프트는 기분을 끌어올리고, 깔끔한 마무리는 더 좋게 만듭니다. 도구 실패와 권한 거절은 기분을 떨어뜨립니다.",
+        "character.vital.energy.desc": "쉴 때 회복하고, 지칠수록 더 빨리 돌아옵니다. 작업 중에는 멈추고, 도구를 몰아서 쓰면 더 빨리 닳습니다.",
+        "character.vital.health.desc": "하루 작업 리듬을 봅니다. 꾸준한 몰입은 회복으로 이어지고, 긴 공백이나 반복된 과로는 깎아먹습니다.",
+
+        // 사이버 속성 설명
+        "character.cyber.focus.desc": "안정적인 도구 사용과 끊기지 않는 몰입으로 차곡차곡 쌓입니다.",
+        "character.cyber.diligence.desc": "파일을 고치고, 결과를 쓰고, 셸 작업을 끝낼수록 더 단단해집니다.",
+        "character.cyber.collab.desc": "프롬프트에 답하고, 권한 흐름을 처리하고, 일을 앞으로 밀어붙일수록 올라갑니다.",
+        "character.cyber.taste.desc": "정확하고 군더더기 없고 마무리가 깔끔한 세션일수록 더 좋아집니다.",
+        "character.cyber.curiosity.desc": "코드를 읽고, 검색하고, 필요한 정보를 확인할수록 자랍니다.",
+
+        // 통계 형식
+        "character.stats.streakSuffix": " 일",
+        "character.stats.last7days.today": "오늘",
+        "character.stats.last7days.empty": "최근 7일간 활동 기록이 없습니다.",
+
+        // 공통
+        "common.cancel": "취소",
     ]
 
     private static let tr: [String: String] = [
@@ -1206,5 +1442,64 @@ final class L10n: ObservableObject {
         "scroll_for_more": "Daha fazla için kaydır",
         "scroll_hidden": "aşağıda",
         "lines": "satır",
+
+        // Karakter Sistemi
+        "character.tab.appearance": "Görünüm",
+        "character.tab.stats": "Durum ve İstatistik",
+        "character.mood.sick": "Hasta",
+        "character.mood.tired": "Yorgun",
+        "character.mood.hungry": "Aç",
+        "character.mood.sad": "Üzgün",
+        "character.mood.joyful": "Mutlu",
+        "character.vital.hunger": "AÇLIK",
+        "character.vital.mood": "RUH HALI",
+        "character.vital.energy": "ENERJİ",
+        "character.vital.health": "SAĞLIK",
+        "character.cyber.focus": "ODAK",
+        "character.cyber.diligence": "ÇALIŞKANLIK",
+        "character.cyber.collab": "İŞBİRLİĞİ",
+        "character.cyber.taste": "KOD ZEVKİ",
+        "character.cyber.curiosity": "MERAK",
+        "character.stats.totalSessions": "Toplam Oturum",
+        "character.stats.totalToolCalls": "Toplam Araç Çağrısı",
+        "character.stats.totalActive": "Toplam Aktif Süre",
+        "character.stats.todayActive": "Bugün Aktif",
+        "character.stats.streak": "Ardışık Aktif Gün",
+        "character.stats.overwork": "Aşırı Çalışma",
+        "character.stats.toolRanking": "Araç Sıralaması",
+        "character.stats.cliRanking": "CLI Araç Çağrısı Sıralaması",
+        "character.stats.last7Days": "Son 7 Günlük Etkinlik",
+        "character.settings.pause": "İstatistikleri Duraklat",
+        "character.settings.rebuild": "İstatistikleri Yeniden Oluştur",
+        "character.settings.reset": "Karakter Verilerini Sıfırla",
+        "character.settings.resetConfirm": "Tüm veriler silinecek ve geri alınamayacak.",
+        "character.panel.title": "ANGEL",
+
+        // Karakter bölüm başlıkları
+        "character.section.vitals": "Yaşam Değerleri",
+        "character.section.cyber": "Siber Nitelikler",
+        "character.section.lifetime": "Yaşam Boyu İstatistikler",
+        "character.section.controls": "Kontroller",
+
+        // Yaşam değeri açıklamaları
+        "character.vital.hunger.desc": "Zamanla yavaş yavaş azalır. Gerçek iş yaptığında geri dolar, yoğun emek daha güçlü doyurur.",
+        "character.vital.mood.desc": "Yeni istemler moral verir, temiz biten bir oturum keyfini artırır. Araç hataları ve reddedilen izinler moral düşürür.",
+        "character.vital.energy.desc": "Boştayken toparlanır ve ne kadar tükenmişse o kadar hızlı geri gelir. Çalışırken durur, araçları üst üste kullanınca daha çabuk azalır.",
+        "character.vital.health.desc": "Günün çalışma ritmini yansıtır. Düzenli odak toparlar, uzun boşluklar ve üst üste fazla yüklenmek ise aşağı çeker.",
+
+        // Siber nitelik açıklamaları
+        "character.cyber.focus.desc": "Sağlam araç kullanımı ve kesintisiz odakla birikir.",
+        "character.cyber.diligence.desc": "Dosya düzenledikçe, sonuç yazdıkça ve kabuk işlerini tamamladıkça güçlenir.",
+        "character.cyber.collab.desc": "İstemlere yanıt verdikçe, izin akışlarını çözdükçe ve işi akıttıkça yükselir.",
+        "character.cyber.taste.desc": "İsabetli, verimli ve temiz kapanan oturumlarda gelişir.",
+        "character.cyber.curiosity.desc": "Kod okudukça, aradıkça ve gereken bilgiyi doğruladıkça büyür.",
+
+        // İstatistik biçimlendirme
+        "character.stats.streakSuffix": " gün",
+        "character.stats.last7days.today": "Bugün",
+        "character.stats.last7days.empty": "Son 7 günde etkinlik yok.",
+
+        // Ortak
+        "common.cancel": "İptal",
     ]
 }
