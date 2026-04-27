@@ -494,21 +494,33 @@ public final class CharacterPersistence {
     private func applySchema() {
         exec("""
             CREATE TABLE IF NOT EXISTS character_state (
-                id               INTEGER PRIMARY KEY CHECK (id = 1),
-                schema_version   INTEGER NOT NULL DEFAULT 3,
-                last_ticked_at   REAL    NOT NULL,
-                paused           INTEGER NOT NULL DEFAULT 0,
-                vital_hunger     REAL    NOT NULL,
-                vital_mood       REAL    NOT NULL,
-                vital_energy     REAL    NOT NULL,
-                vital_health     REAL    NOT NULL,
-                cyber_focus      REAL    NOT NULL,
-                cyber_diligence  REAL    NOT NULL,
-                cyber_collab     REAL    NOT NULL,
-                cyber_taste      REAL    NOT NULL,
-                cyber_curiosity  REAL    NOT NULL
+                id                       INTEGER PRIMARY KEY CHECK (id = 1),
+                schema_version           INTEGER NOT NULL DEFAULT 3,
+                last_ticked_at           REAL    NOT NULL,
+                paused                   INTEGER NOT NULL DEFAULT 0,
+                vital_hunger             REAL    NOT NULL,
+                vital_mood               REAL    NOT NULL,
+                vital_energy             REAL    NOT NULL,
+                vital_health             REAL    NOT NULL,
+                cyber_focus              REAL    NOT NULL,
+                cyber_diligence          REAL    NOT NULL,
+                cyber_collab             REAL    NOT NULL,
+                cyber_taste              REAL    NOT NULL,
+                cyber_curiosity          REAL    NOT NULL,
+                log_raw_hook_payloads    INTEGER NOT NULL DEFAULT 0,
+                log_tick_events          INTEGER NOT NULL DEFAULT 0
             );
             """)
+        // Idempotent ADD COLUMN for upgrades — schema_version is intentionally
+        // NOT bumped because performDestructiveResetIfNeeded would wipe user
+        // history. Existing-column check avoids spamming the log on every boot.
+        let stateColumns = tableColumns("character_state")
+        if !stateColumns.contains("log_raw_hook_payloads") {
+            exec("ALTER TABLE character_state ADD COLUMN log_raw_hook_payloads INTEGER NOT NULL DEFAULT 0;")
+        }
+        if !stateColumns.contains("log_tick_events") {
+            exec("ALTER TABLE character_state ADD COLUMN log_tick_events INTEGER NOT NULL DEFAULT 0;")
+        }
         exec("""
             CREATE TABLE IF NOT EXISTS character_lifetime (
                 id                          INTEGER PRIMARY KEY CHECK (id = 1),
@@ -650,7 +662,8 @@ public final class CharacterPersistence {
         let stateSQL = """
             SELECT last_ticked_at, paused,
                    vital_hunger, vital_mood, vital_energy, vital_health,
-                   cyber_focus, cyber_diligence, cyber_collab, cyber_taste, cyber_curiosity
+                   cyber_focus, cyber_diligence, cyber_collab, cyber_taste, cyber_curiosity,
+                   log_raw_hook_payloads, log_tick_events
             FROM character_state
             WHERE id = 1
             """
@@ -670,6 +683,8 @@ public final class CharacterPersistence {
         stats.cyber.collab = sqlite3_column_double(stateStmt, 8)
         stats.cyber.taste = sqlite3_column_double(stateStmt, 9)
         stats.cyber.curiosity = sqlite3_column_double(stateStmt, 10)
+        stats.settings.logRawHookPayloads = sqlite3_column_int64(stateStmt, 11) != 0
+        stats.settings.logTickEvents = sqlite3_column_int64(stateStmt, 12) != 0
 
         let lifetimeSQL = """
             SELECT total_sessions, total_tool_calls, total_active_seconds,
@@ -752,8 +767,9 @@ public final class CharacterPersistence {
             INSERT INTO character_state(
                 id, schema_version, last_ticked_at, paused,
                 vital_hunger, vital_mood, vital_energy, vital_health,
-                cyber_focus, cyber_diligence, cyber_collab, cyber_taste, cyber_curiosity
-            ) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cyber_focus, cyber_diligence, cyber_collab, cyber_taste, cyber_curiosity,
+                log_raw_hook_payloads, log_tick_events
+            ) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 schema_version = excluded.schema_version,
                 last_ticked_at = excluded.last_ticked_at,
@@ -766,7 +782,9 @@ public final class CharacterPersistence {
                 cyber_diligence = excluded.cyber_diligence,
                 cyber_collab = excluded.cyber_collab,
                 cyber_taste = excluded.cyber_taste,
-                cyber_curiosity = excluded.cyber_curiosity
+                cyber_curiosity = excluded.cyber_curiosity,
+                log_raw_hook_payloads = excluded.log_raw_hook_payloads,
+                log_tick_events = excluded.log_tick_events
             """
         guard let stmt = prepare(sql) else { return false }
         defer { sqlite3_finalize(stmt) }
@@ -782,6 +800,8 @@ public final class CharacterPersistence {
         bind(stmt, 10, real: stats.cyber.collab)
         bind(stmt, 11, real: stats.cyber.taste)
         bind(stmt, 12, real: stats.cyber.curiosity)
+        bind(stmt, 13, int: stats.settings.logRawHookPayloads ? 1 : 0)
+        bind(stmt, 14, int: stats.settings.logTickEvents ? 1 : 0)
         return sqlite3_step(stmt) == SQLITE_DONE
     }
 
@@ -1096,9 +1116,13 @@ public final class CharacterPersistence {
             }
 
         case .settings:
-            guard metricName == "paused",
-                  case .bool(let paused) = valueAfter else { return }
-            stats.settings.paused = paused
+            guard case .bool(let flag) = valueAfter else { return }
+            switch metricName {
+            case "paused":              stats.settings.paused = flag
+            case "logRawHookPayloads":  stats.settings.logRawHookPayloads = flag
+            case "logTickEvents":       stats.settings.logTickEvents = flag
+            default: return
+            }
 
         case .toolUse:
             guard case .int(let count) = valueAfter else { return }
@@ -1153,6 +1177,18 @@ public final class CharacterPersistence {
     }
 
     // MARK: - SQLite Helpers
+
+    /// Returns the set of column names for `tableName`, empty if the table
+    /// does not exist. Used to gate idempotent ADD COLUMN migrations.
+    private func tableColumns(_ tableName: String) -> Set<String> {
+        guard let stmt = prepare("PRAGMA table_info(\(tableName))") else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        var names: Set<String> = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let name = columnText(stmt, 1) { names.insert(name) }
+        }
+        return names
+    }
 
     @discardableResult
     private func exec(_ sql: String) -> Bool {

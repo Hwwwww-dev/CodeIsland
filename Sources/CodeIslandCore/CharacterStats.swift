@@ -96,7 +96,25 @@ public struct LifetimeStats: Codable, Sendable, Equatable {
 
 public struct CharacterSettings: Codable, Sendable, Equatable {
     public var paused: Bool = false
-    public init(paused: Bool = false) { self.paused = paused }
+    /// When false (default), PreToolUse/PostToolUse hook events store a compact
+    /// payload (success/sizes/keys only) instead of the full raw JSON. Saves
+    /// ~70% of event-table size on tool-heavy users. Toggle ON only if you
+    /// need full event replay capability.
+    public var logRawHookPayloads: Bool = false
+    /// When false (default), internal Tick events (timer-driven decay/recovery)
+    /// do NOT write a row to character_event. Mutations still apply and stats
+    /// are still snapshotted to character_state. Saves ~1 row every 1–5s of
+    /// runtime. Toggle ON only if you want a full ledger of intra-second drift.
+    public var logTickEvents: Bool = false
+    public init(
+        paused: Bool = false,
+        logRawHookPayloads: Bool = false,
+        logTickEvents: Bool = false
+    ) {
+        self.paused = paused
+        self.logRawHookPayloads = logRawHookPayloads
+        self.logTickEvents = logTickEvents
+    }
 }
 
 // MARK: - CharacterStats (root Codable model)

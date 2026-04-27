@@ -1599,8 +1599,9 @@ final class CharacterEngineTests: XCTestCase {
         var stats = CharacterStats()
         stats.vital.health = 80
         // Asymmetric coupling: 24h hunger decay (-96, clamped) propagates -19.2 to health
-        // (hunger→health=0.2). Idle energy fully recovers from 60→100 (+40), propagating
-        // +12 to health (energy→health=0.3). Net: 80 - 19.2 + 12 ≈ 72.79. No daily-roll
+        // (hunger→health=0.2). Idle energy fully recovers from 60→100 (+40). With normal
+        // body state (energy≥60, delta>0) multiplier=1.5, propagating +18 to health
+        // (energy→health=0.3×1.5). Net: 80 - 19.2 + 18 ≈ 78.79. No daily-roll
         // fires (<1h active), so we only see propagation drift.
         stats.vital.hunger = 60; stats.vital.energy = 60; stats.vital.mood = 60
         stats.stats.currentDayActiveSeconds = 600
@@ -1608,14 +1609,14 @@ final class CharacterEngineTests: XCTestCase {
         let now = calendarDay(offsetDays: 0).addingTimeInterval(60)
         let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
         engine.tick(now: now)
-        XCTAssertEqual(engine.characterStats.vital.health, 72.79, accuracy: 0.5)
+        XCTAssertEqual(engine.characterStats.vital.health, 78.79, accuracy: 0.5)
     }
 
     @MainActor
     func testOverwork_singleDay_doesNotPunishHealth() {
         var stats = CharacterStats()
         stats.vital.health = 80
-        // Same propagation drift as testRestDay (~72.79). Streak=1 < 3, no -3 penalty applied.
+        // Same propagation drift as testRestDay (~78.79). Streak=1 < 3, no -3 penalty applied.
         // The test name's intent is "single overwork day adds NO penalty" — we still verify
         // that by checking health did not drop a further 3 below the propagation baseline.
         stats.vital.hunger = 60; stats.vital.energy = 60; stats.vital.mood = 60
@@ -1625,7 +1626,7 @@ final class CharacterEngineTests: XCTestCase {
         let now = calendarDay(offsetDays: 0).addingTimeInterval(60)
         let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
         engine.tick(now: now)
-        XCTAssertEqual(engine.characterStats.vital.health, 72.79, accuracy: 0.5)
+        XCTAssertEqual(engine.characterStats.vital.health, 78.79, accuracy: 0.5)
         XCTAssertEqual(engine.characterStats.stats.overworkStreakDays, 1)
     }
 
@@ -1633,9 +1634,9 @@ final class CharacterEngineTests: XCTestCase {
     func testOverwork_thirdConsecutiveDay_punishesHealth() {
         var stats = CharacterStats()
         stats.vital.health = 80
-        // Propagation baseline ≈72.79 (see testRestDay). Streak=3 triggers daily-roll
+        // Propagation baseline ≈78.79 (see testRestDay). Streak=3 triggers daily-roll
         // health -3. mood/health are indicators (no out-edges), so the -3 stays local.
-        // Net: ~72.79 - 3 = 69.79. The -3 penalty is the test's actual intent.
+        // Net: ~78.79 - 3 = 75.79. The -3 penalty is the test's actual intent.
         stats.vital.hunger = 60; stats.vital.energy = 60; stats.vital.mood = 60
         stats.stats.currentDayActiveSeconds = 9 * 3600
         stats.stats.overworkStreakDays = 2
@@ -1643,7 +1644,7 @@ final class CharacterEngineTests: XCTestCase {
         let now = calendarDay(offsetDays: 0).addingTimeInterval(60)
         let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
         engine.tick(now: now)
-        XCTAssertEqual(engine.characterStats.vital.health, 69.79, accuracy: 0.5)
+        XCTAssertEqual(engine.characterStats.vital.health, 75.79, accuracy: 0.5)
         XCTAssertEqual(engine.characterStats.stats.overworkStreakDays, 3)
     }
 
@@ -1665,15 +1666,15 @@ final class CharacterEngineTests: XCTestCase {
     func testHealthyDay_grantsHealthBonus() {
         var stats = CharacterStats()
         stats.vital.health = 80
-        // Propagation baseline ≈72.79 (see testRestDay). Healthy day adds +3 directly to
-        // health (indicator, no out-edges). Net: ~72.79 + 3 = 75.79.
+        // Propagation baseline ≈78.79 (see testRestDay). Healthy day adds +3 directly to
+        // health (indicator, no out-edges). Net: ~78.79 + 3 = 81.79.
         stats.vital.hunger = 60; stats.vital.energy = 60; stats.vital.mood = 60
         stats.stats.currentDayActiveSeconds = 3 * 3600
         stats.lastTickedAt = calendarDay(offsetDays: -1)
         let now = calendarDay(offsetDays: 0).addingTimeInterval(60)
         let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
         engine.tick(now: now)
-        XCTAssertEqual(engine.characterStats.vital.health, 75.79, accuracy: 0.5)
+        XCTAssertEqual(engine.characterStats.vital.health, 81.79, accuracy: 0.5)
     }
 
     // MARK: - Task 6: Meal also restores energy

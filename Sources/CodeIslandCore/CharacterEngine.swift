@@ -36,10 +36,19 @@ private let maxDecayHours: Double = 7 * 24
 /// takes ~17.5h of pure absence; one 8h workday tops up easily.
 private let hungerDecayPerHour: Double = 4.0
 /// Idle-only energy recovery rate (exponential approach to 100).
-/// Time constant τ = 1/rate minutes. 0.05 → τ ≈ 20 min; e.g. 30→80 takes ~25 min,
-/// 0→90 takes ~46 min. Tuned slower than before so "not running a session"
-/// doesn't fully refill in a few minutes.
-private let idleEnergyRecoveryPerMinute: Double = 0.05
+/// Time constant τ = 1/rate minutes. 0.075 → τ ≈ 13.3 min; e.g. 30→80 takes ~17 min,
+/// 0→90 takes ~31 min, 0→99 takes ~61 min. Anchored on the "30→80 in 15–20 min"
+/// felt-recovery target — fast enough to come back from a half-day session in
+/// under 20 min, slow enough that a full day off (0→full) still takes ~1 hour.
+private let idleEnergyRecoveryPerMinute: Double = 0.075
+
+/// Snap-to-full epsilon for idle energy recovery. Pure exponential approach
+/// only ever asymptotes to 100, never reaches it. When the recovered energy
+/// would land within this distance of 100, we pin to exactly 100 — the user
+/// expects "fully rested" to be a real terminal state, not an infinite tail.
+/// At r=0.075, ε=0.1 means 0→100 takes ~92 min; gauge resolution ~1 unit so
+/// 0.1 is invisible to the user but lets the value actually terminate.
+private let idleEnergyRecoveryFullThreshold: Double = 0.1
 /// Cooldown after the last active session before idle recovery starts (seconds).
 /// Brief task-switching pauses (<60s) shouldn't count as rest. If a session resumes
 /// within the cooldown, the buffer just resets — no recovery happened anyway.
@@ -83,11 +92,48 @@ private let vitalCouplingWeights: [VitalKey: [VitalKey: Double]] = [
     .energy: [.mood: 0.3, .health: 0.3],
     .health: [:],
 ]
+
+/// Asymmetric propagation multiplier from driver vitals (hunger, energy) to
+/// mood/health. Multiplier depends on the driver's value BEFORE the delta is
+/// applied AND the sign of the delta.
+///
+///   driver < 30  (critical)  →  negative 2.0×  /  positive 1.0×
+///   30 ≤ d < 60  (low)       →  negative 1.5×  /  positive 1.2×
+///   driver ≥ 60  (normal)    →  negative 1.0×  /  positive 1.5×
+///
+/// Felt behavior:
+///   - Critical body → decay cascades hard, recovery barely registers
+///   - Normal body   → decay shrugs off, recovery cascades strongly
+///
+/// Applied in `applyVitalDelta` to (delta · weight), not to the driver's own
+/// delta. Single-pass — the amplified propagation does NOT recurse.
+private func propagationMultiplier(driverBefore v: Double, deltaSign: Double) -> Double {
+    let isNegative = deltaSign < 0
+    if v < 30 { return isNegative ? 2.0 : 1.0 }
+    if v < 60 { return isNegative ? 1.5 : 1.2 }
+    return     isNegative ? 1.0 : 1.5
+}
 /// Mood should follow the overall body state smoothly, not via hard thresholds.
 /// We derive a target mood from a weighted geometric mean of hunger/energy/health
 /// and move toward it gradually on each tick.
 private let moodEquilibriumWeights = (hunger: 0.35, energy: 0.45, health: 0.20)
-private let moodEquilibriumRatePerHour: Double = 0.25
+/// Drift rate (per hour) for mood toward the weighted geometric mean of
+/// hunger/energy/health. Bumped from 0.25 (τ=4h) to 0.5 (τ=2h) so a body that
+/// just took a hit (energy crash, hunger drop) doesn't leave mood hanging
+/// happily for half a workday. Combined with `moodOvershootCap` below.
+private let moodEquilibriumRatePerHour: Double = 0.5
+/// Maximum amount mood is allowed to sit ABOVE the equilibrium target.
+/// Event-driven mood rewards (UserPromptSubmit +2, PostStop +3, success bonus)
+/// can spike mood above what the body deserves, but only by this much; any
+/// excess is yanked down to `target + cap` immediately on the next tick. No
+/// lower cap — feeling worse than the body deserves is allowed (bad streak
+/// emotions persist), and positive events naturally pull it back.
+private let moodOvershootCap: Double = 15
+/// Snap-to-target epsilon for mood equilibrium drift. Same rationale as
+/// `idleEnergyRecoveryFullThreshold` — exp drift only ever asymptotes; we
+/// pin to the geometric-mean target when within ε so the gauge can actually
+/// reach 100 (or any other steady-state target) instead of asymptoting forever.
+private let moodEquilibriumSnapThreshold: Double = 0.1
 private let minLoggedVitalFraction: Double = 0.01
 
 private let characterRuleVersion = 1
@@ -271,7 +317,9 @@ public final class CharacterEngine {
             toolUseID: event.toolUseId,
             agentID: event.agentId,
             occurredAt: now,
-            payload: wrappedJSON(event.rawJSON),
+            payload: shouldStoreRawHookPayload(eventName: eventName)
+                ? wrappedJSON(event.rawJSON)
+                : compactedHookPayload(eventName: eventName, raw: event.rawJSON),
             derived: derived,
             recordWhenNoDeltas: true,
             reasonPrefix: normalizedReasonPrefix(for: eventName)
@@ -422,8 +470,16 @@ public final class CharacterEngine {
                 let dtMinutes = now.timeIntervalSince(recoveryStart) / 60
                 let decayFactor = exp(-idleEnergyRecoveryPerMinute * dtMinutes)
                 let e0 = characterStats.vital.energy
-                let energyDelta = (100 - (100 - e0) * decayFactor) - e0
+                let proposed = 100 - (100 - e0) * decayFactor
+                // Snap-to-full: exp tail asymptotes; force the gauge to land
+                // exactly at 100 once we're within ε. Final-stretch propagation
+                // (mood/health) still flows through applyVitalDelta on this push.
+                let target = (proposed >= 100 - idleEnergyRecoveryFullThreshold) ? 100.0 : proposed
+                let energyDelta = target - e0
                 metadata.derived["idleEnergyRecoveryDelta"] = .double(energyDelta)
+                if target == 100.0 {
+                    metadata.derived["idleEnergyRecoverySnappedFull"] = .bool(true)
+                }
                 applyVitalDelta(.energy, energyDelta)
             } else {
                 metadata.derived["idleEnergyRecoveryBuffered"] = .bool(true)
@@ -769,14 +825,36 @@ public final class CharacterEngine {
 
     /// Apply a delta to a single vital and propagate to the other three by weight.
     /// Single-pass: propagation does NOT recurse. Clamps all vitals at the end.
+    /// For hunger/energy drivers, applies an asymmetric propagation multiplier
+    /// (see `propagationMultiplier`) so a depleted body transmits damage harshly
+    /// and absorbs recovery weakly, while a healthy body shrugs off damage and
+    /// amplifies recovery.
     private func applyVitalDelta(_ key: VitalKey, _ delta: Double) {
         guard delta != 0 else { return }
+        let driverBefore = currentValue(of: key)
         addVital(key, delta)
         let weights = vitalCouplingWeights[key] ?? [:]
+        let propMultiplier: Double = {
+            switch key {
+            case .hunger, .energy:
+                return propagationMultiplier(driverBefore: driverBefore, deltaSign: delta)
+            case .mood, .health:
+                return 1.0  // indicators don't propagate anyway, but keep symmetric
+            }
+        }()
         for (target, w) in weights {
-            addVital(target, delta * w)
+            addVital(target, delta * w * propMultiplier)
         }
         characterStats.vital.clamp()
+    }
+
+    private func currentValue(of key: VitalKey) -> Double {
+        switch key {
+        case .hunger: return characterStats.vital.hunger
+        case .mood:   return characterStats.vital.mood
+        case .energy: return characterStats.vital.energy
+        case .health: return characterStats.vital.health
+        }
     }
 
     private func addVital(_ key: VitalKey, _ amount: Double) {
@@ -1042,12 +1120,37 @@ public final class CharacterEngine {
             energy: moodEquilibriumWeights.energy,
             health: moodEquilibriumWeights.health
         )
+
+        // Single-sided overshoot clamp: mood event rewards can push above target,
+        // but only by `moodOvershootCap`. Anything beyond gets yanked down BEFORE
+        // the smooth drift. No symmetric floor — undershooting target (mood low
+        // despite healthy body) is allowed and self-corrects via positive events.
+        let upperCap = min(100.0, targetMood + moodOvershootCap)
+        if characterStats.vital.mood > upperCap {
+            let yank = characterStats.vital.mood - upperCap
+            metadata.derived["moodOvershootCapApplied"] = .double(yank)
+            characterStats.vital.mood = upperCap
+        }
+
         let rate = 1 - exp(-moodEquilibriumRatePerHour * elapsedHours)
-        let moodDelta = (targetMood - characterStats.vital.mood) * rate
+        var moodDelta = (targetMood - characterStats.vital.mood) * rate
+
+        // Snap-to-target: exp drift asymptotes; if the post-delta value would
+        // land within ε of the target, replace the delta with the exact gap so
+        // mood actually reaches the steady state (mirrors the energy snap).
+        let proposedGap = targetMood - (characterStats.vital.mood + moodDelta)
+        var snapped = false
+        if abs(proposedGap) <= moodEquilibriumSnapThreshold {
+            moodDelta = targetMood - characterStats.vital.mood
+            snapped = true
+        }
 
         metadata.derived["moodEquilibriumTarget"] = .double(targetMood)
         metadata.derived["moodEquilibriumRate"] = .double(rate)
         metadata.derived["moodEquilibriumDelta"] = .double(moodDelta)
+        if snapped {
+            metadata.derived["moodEquilibriumSnapped"] = .bool(true)
+        }
 
         guard abs(moodDelta) > 0.000_000_1 else { return }
         characterStats.vital.mood += moodDelta
@@ -1223,6 +1326,76 @@ public final class CharacterEngine {
         return wrapped
     }
 
+    /// Returns true if a hook event should write its FULL raw JSON to
+    /// payload_json. When false, callers should substitute `compactedHookPayload`.
+    /// Currently only PreToolUse / PostToolUse are gated — those carry tool
+    /// input/output bodies that can be tens of KB each.
+    private func shouldStoreRawHookPayload(eventName: String) -> Bool {
+        if characterStats.settings.logRawHookPayloads { return true }
+        switch eventName {
+        case "PreToolUse", "PostToolUse", "PostToolUseFailure":
+            return false
+        default:
+            return true
+        }
+    }
+
+    /// Returns true if a high-volume derived-effect row should be persisted.
+    /// Stat mutations still apply regardless; this only gates audit-log writes.
+    private func shouldPersistEventRow(kind: CharacterEventKind, name: String) -> Bool {
+        guard kind == .derivedEffect else { return true }
+        switch name {
+        case "Tick":
+            return characterStats.settings.logTickEvents
+        default:
+            return true
+        }
+    }
+
+    /// Reduces a hook payload to a small audit summary (success / sizes / a
+    /// handful of structural keys) instead of the full input/output bodies.
+    /// Drops the lion's share of disk usage on tool-heavy users — empirically
+    /// avg PostToolUse payload of ~7 KB collapses to ~200 B.
+    private func compactedHookPayload(eventName: String, raw: [String: Any]) -> [String: AnyCodableLike] {
+        var out: [String: AnyCodableLike] = [:]
+        out["compact"] = .bool(true)
+
+        if let toolName = raw["tool_name"] as? String {
+            out["tool_name"] = .string(toolName)
+        }
+        if let exitCode = raw["exit_code"] as? Int {
+            out["exitCode"] = .int(Int64(exitCode))
+        }
+        if let success = raw["success"] as? Bool {
+            out["success"] = .bool(success)
+        }
+
+        if let toolInput = raw["tool_input"] {
+            out["toolInputBytes"] = .int(Int64(approxJSONByteCount(toolInput)))
+            if let dict = toolInput as? [String: Any] {
+                let keys = dict.keys.sorted().prefix(20).map { AnyCodableLike.string($0) }
+                out["toolInputKeys"] = .array(Array(keys))
+            }
+        }
+        if let toolResponse = raw["tool_response"] {
+            out["toolResponseBytes"] = .int(Int64(approxJSONByteCount(toolResponse)))
+            if let dict = toolResponse as? [String: Any] {
+                if let isError = dict["is_error"] as? Bool {
+                    out["isError"] = .bool(isError)
+                }
+                if let exit = dict["exit_code"] as? Int {
+                    out["responseExitCode"] = .int(Int64(exit))
+                }
+            }
+        }
+        return out
+    }
+
+    private func approxJSONByteCount(_ value: Any) -> Int {
+        let serializable: Any = (value is [String: Any] || value is [Any]) ? value : [value]
+        return (try? JSONSerialization.data(withJSONObject: serializable, options: [])).map { $0.count } ?? 0
+    }
+
     private func firstNonEmptyString(_ dictionary: [String: Any], keys: [String]) -> String? {
         for key in keys {
             if let value = dictionary[key] as? String {
@@ -1281,6 +1454,16 @@ public final class CharacterEngine {
         var metadata = EventMutationMetadata(derived: derived)
         body(&metadata)
         characterStats.vital.clamp()
+
+        // Settings-gated row suppression: stat mutations still apply, but the
+        // event row + its deltas are NOT persisted. Used to keep the ledger
+        // small for high-frequency derived-effect events (Tick, sampling).
+        // The character_state snapshot is still flushed so decay/recovery
+        // results survive a restart.
+        if !shouldPersistEventRow(kind: kind, name: name) {
+            persistence?.saveNow(characterStats)
+            return false
+        }
 
         let deltas = makeEventDeltas(
             before: statsBefore,
