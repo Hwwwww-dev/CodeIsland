@@ -1169,6 +1169,42 @@ final class CharacterEngineTests: XCTestCase {
         XCTAssertEqual(stats.vital.health, 68.0, accuracy: 0.001)
     }
 
+    @MainActor
+    func testSuppressedTickStillFlushesDailyActiveReadModel() {
+        let tmpDB = FileManager.default.temporaryDirectory
+            .appendingPathComponent("char-suppressed-tick-daily-\(UUID().uuidString).sqlite")
+        defer { try? FileManager.default.removeItem(at: tmpDB) }
+
+        let persistence = CharacterPersistence(dbPath: tmpDB)
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: Date())
+        let yesterdayStart = calendar.date(byAdding: .day, value: -1, to: todayStart)!
+        let tickTime = todayStart.addingTimeInterval(60)
+        let yesterdayString = localDayString(yesterdayStart)
+
+        var stats = persistence.load()
+        stats.lastTickedAt = yesterdayStart.addingTimeInterval(12 * 3600)
+        stats.stats.currentDayDate = yesterdayString
+        stats.stats.currentDayActiveSeconds = 5400
+        stats.stats.totalActiveSeconds = 5400
+        stats.settings.logTickEvents = false
+
+        let engine = CharacterEngine.makeForTesting(
+            stats: stats,
+            now: { tickTime },
+            persistence: persistence
+        )
+        engine.tick(now: tickTime, isAnySessionActive: false)
+
+        XCTAssertTrue(engine.listEvents(limit: 10, filter: CharacterEventQueryFilter(eventName: "Tick")).isEmpty)
+        XCTAssertEqual(engine.characterStats.stats.currentDayActiveSeconds, 0)
+
+        let chart = persistence.last7DaysActive()
+        XCTAssertTrue(chart.contains(where: {
+            localDayString($0.date) == yesterdayString && $0.seconds == 5400
+        }))
+    }
+
     // MARK: - Engine State Tests
 
     @MainActor

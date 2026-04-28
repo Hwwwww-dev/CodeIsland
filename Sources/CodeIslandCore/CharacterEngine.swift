@@ -1629,7 +1629,7 @@ public final class CharacterEngine {
         // The character_state snapshot is still flushed so decay/recovery
         // results survive a restart.
         if !shouldPersistEventRow(kind: kind, name: name) {
-            persistence?.saveNow(characterStats)
+            persistence?.saveNow(characterStats, dailyActiveWrites: metadata.dailyActiveWrites)
             return false
         }
 

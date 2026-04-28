@@ -203,6 +203,57 @@ final class CharacterPersistenceTests: XCTestCase {
         XCTAssertEqual(sessions[0].model, "gpt-5.5")
     }
 
+    func testOpenBackfillsDailyActiveRowsFromLedgerDeltas() throws {
+        let dbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("char-ledger-daily-backfill-\(UUID().uuidString).sqlite")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dbURL) }
+
+        let persistence = CharacterPersistence(dbPath: dbURL)
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: Date())
+        let activeDay = calendar.date(byAdding: .day, value: -1, to: todayStart)!
+        let activeDayString = dayString(activeDay)
+
+        var stats = persistence.load()
+        stats.stats.currentDayActiveSeconds = 3600
+        stats.stats.totalActiveSeconds = 3600
+
+        let draft = CharacterLedgerEventDraft(
+            batchID: "batch-daily-backfill",
+            occurredAt: activeDay.addingTimeInterval(12 * 3600),
+            eventKind: .derivedEffect,
+            eventName: "PromptActiveSample",
+            sessionID: "s-daily",
+            source: "codex",
+            ruleVersion: 1,
+            payload: [:],
+            derived: [:]
+        )
+        let deltas = [
+            CharacterLedgerDeltaDraft(
+                metricDomain: .lifetime,
+                metricName: "currentDayActiveSeconds",
+                reasonCode: "prompt_active_sample.lifetime.currentDayActiveSeconds",
+                valueBefore: .int(0),
+                valueAfter: .int(3600),
+                numericDelta: 3600
+            )
+        ]
+        XCTAssertNotNil(persistence.append(event: draft, deltas: deltas, snapshot: stats))
+        XCTAssertFalse(
+            persistence.last7DaysActive().contains(where: { dayString($0.date) == activeDayString }),
+            "The append path did not write daily_active directly; this simulates an old DB."
+        )
+
+        let reopened = CharacterPersistence(dbPath: dbURL)
+        _ = reopened.load()
+
+        let chart = reopened.last7DaysActive()
+        XCTAssertTrue(chart.contains(where: {
+            dayString($0.date) == activeDayString && $0.seconds == 3600
+        }))
+    }
+
     func testEngineIntegration_recordsEventsAndResetClearsLedger() throws {
         let persistence = makePersistence()
         var stats = persistence.load()

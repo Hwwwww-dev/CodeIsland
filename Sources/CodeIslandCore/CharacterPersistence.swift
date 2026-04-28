@@ -56,6 +56,11 @@ public final class CharacterPersistence {
         writeSnapshot(stats)
     }
 
+    func saveNow(_ stats: CharacterStats, dailyActiveWrites: [String: Int]) {
+        openIfNeeded()
+        writeSnapshot(stats, dailyActiveWrites: dailyActiveWrites)
+    }
+
     public func append(
         event draft: CharacterLedgerEventDraft,
         deltas: [CharacterLedgerDeltaDraft],
@@ -488,6 +493,7 @@ public final class CharacterPersistence {
         discardLegacyJSONIfPresent()
         performDestructiveResetIfNeeded()
         purgeFutureDailyActiveRows()
+        backfillMissingDailyActiveRowsFromLedger()
         log.info("character.sqlite opened at \(path)")
     }
 
@@ -663,6 +669,41 @@ public final class CharacterPersistence {
         sqlite3_step(stmt)
     }
 
+    private func backfillMissingDailyActiveRowsFromLedger() {
+        let recoveredSQL = """
+            SELECT date(e.occurred_at, 'unixepoch', 'localtime') AS day,
+                   CAST(ROUND(SUM(d.delta_numeric)) AS INTEGER) AS active_seconds
+            FROM character_event_delta d
+            JOIN character_event e ON e.id = d.event_id
+            WHERE d.metric_domain = 'lifetime'
+              AND d.metric_name = 'currentDayActiveSeconds'
+              AND d.delta_numeric > 0
+            GROUP BY day
+            HAVING active_seconds > 0
+            """
+
+        let insertSQL = """
+            INSERT OR IGNORE INTO character_daily_active(date, active_seconds)
+            \(recoveredSQL)
+            """
+        _ = exec(insertSQL)
+
+        let updateSQL = """
+            WITH recovered AS (
+                \(recoveredSQL)
+            )
+            UPDATE character_daily_active
+            SET active_seconds = (
+                SELECT recovered.active_seconds
+                FROM recovered
+                WHERE recovered.day = character_daily_active.date
+            )
+            WHERE active_seconds <= 0
+              AND date IN (SELECT day FROM recovered)
+            """
+        _ = exec(updateSQL)
+    }
+
     // MARK: - Read
 
     private func readAll() -> CharacterStats? {
@@ -737,9 +778,9 @@ public final class CharacterPersistence {
 
     // MARK: - Write
 
-    private func writeSnapshot(_ stats: CharacterStats) {
+    private func writeSnapshot(_ stats: CharacterStats, dailyActiveWrites: [String: Int] = [:]) {
         guard beginImmediate() else { return }
-        guard writeSnapshotTables(stats) else {
+        guard writeSnapshotTables(stats, upsertDailyActiveRows: dailyActiveWrites) else {
             rollback()
             return
         }
@@ -753,7 +794,8 @@ public final class CharacterPersistence {
     private func writeSnapshotTables(
         _ stats: CharacterStats,
         applyDailyActiveFrom deltas: [CharacterLedgerDeltaDraft] = [],
-        dailyActiveRows: [String: Int]? = nil
+        dailyActiveRows: [String: Int]? = nil,
+        upsertDailyActiveRows rowsToUpsert: [String: Int] = [:]
     ) -> Bool {
         guard upsertCharacterState(stats),
               upsertLifetime(stats),
@@ -766,6 +808,8 @@ public final class CharacterPersistence {
             guard replaceDailyActiveRows(dailyActiveRows) else { return false }
         } else if !deltas.isEmpty {
             guard applyDailyActiveDeltas(deltas) else { return false }
+        } else if !rowsToUpsert.isEmpty {
+            guard upsertDailyActiveRows(rowsToUpsert) else { return false }
         }
 
         return true
@@ -878,6 +922,22 @@ public final class CharacterPersistence {
     private func replaceDailyActiveRows(_ rows: [String: Int]) -> Bool {
         guard exec("DELETE FROM character_daily_active") else { return false }
         let sql = "INSERT INTO character_daily_active(date, active_seconds) VALUES(?, ?)"
+        for (date, seconds) in rows {
+            guard let stmt = prepare(sql) else { return false }
+            bind(stmt, 1, text: date)
+            bind(stmt, 2, int: Int64(seconds))
+            let ok = sqlite3_step(stmt) == SQLITE_DONE
+            sqlite3_finalize(stmt)
+            guard ok else { return false }
+        }
+        return true
+    }
+
+    private func upsertDailyActiveRows(_ rows: [String: Int]) -> Bool {
+        let sql = """
+            INSERT INTO character_daily_active(date, active_seconds) VALUES(?, ?)
+            ON CONFLICT(date) DO UPDATE SET active_seconds = excluded.active_seconds
+            """
         for (date, seconds) in rows {
             guard let stmt = prepare(sql) else { return false }
             bind(stmt, 1, text: date)
