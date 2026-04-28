@@ -96,8 +96,10 @@ struct NotchPanelView: View {
     /// and with-session bar so the mascot-clearance threshold is identical.
     private var collapsedPanelWidth: CGFloat {
         let nw = effectiveNotchW
-        // Reserve space for tool status — proportional to screen width
-        let toolExtra: CGFloat = displayedToolStatus ? (hasNotch ? screenWidth * 0.03 : screenWidth * 0.04) : 0
+        // Reserve space for tool status — proportional to screen width.
+        // Non-notch used to get 0.04× (vs notch's 0.03×), making the simulated island ~20pt
+        // wider than the real-notch case for no good reason. Equalized to 0.03× on both.
+        let toolExtra: CGFloat = displayedToolStatus ? screenWidth * 0.03 : 0
         // +20 is the symmetric static safety margin (10pt per side) — covers
         // the hover-wake offset/scale (~4pt) on no-session and the wing
         // breathing room on with-session.

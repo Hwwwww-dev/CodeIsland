@@ -9,9 +9,12 @@ struct ScreenDetector {
 
     /// Simulated notch width for non-notch screens — scales with screen width.
     /// Base notch width; user scaling is applied in NotchPanelView.effectiveNotchW (@AppStorage).
+    /// Calibrated against real MBP 14"/16" notches (~180–200pt). Previous 0.14·width / cap 240
+    /// produced a 240pt baseline on any monitor ≥ 1715pt wide, which read as "too long" on
+    /// 1080p/1440p externals once wings + tool-status padding piled on.
     private static func fakeNotchWidth(for screen: NSScreen) -> CGFloat {
         let screenW = screen.frame.width
-        return min(max(screenW * 0.14, 160), 240)
+        return min(max(screenW * 0.10, 140), 200)
     }
 
     static func autoPreferredIndex(candidates: [Candidate], activeWindowBounds: CGRect?) -> Int? {
