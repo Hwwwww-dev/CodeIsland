@@ -110,6 +110,7 @@ struct AntiGravityView: View {
     private var idleMoodScene: some View {
         switch mood {
         case .hungry:  agHungryScene
+        case .critical:   agTiredScene
         case .tired:   agTiredScene
         case .sad:     agSadScene
         case .sick:    agSickScene

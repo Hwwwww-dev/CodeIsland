@@ -531,9 +531,16 @@ public final class CharacterPersistence {
                 current_day_date            TEXT    NOT NULL,
                 streak_days                 INTEGER NOT NULL DEFAULT 0,
                 last_active_date            TEXT    NOT NULL,
-                overwork_streak_days        INTEGER NOT NULL DEFAULT 0
+                overwork_streak_days        INTEGER NOT NULL DEFAULT 0,
+                last_full_restore_date      TEXT    NOT NULL DEFAULT ''
             );
             """)
+        // Idempotent ADD COLUMN — same pattern as character_state, keeps
+        // schema_version stable to avoid triggering destructive reset.
+        let lifetimeColumns = tableColumns("character_lifetime")
+        if !lifetimeColumns.contains("last_full_restore_date") {
+            exec("ALTER TABLE character_lifetime ADD COLUMN last_full_restore_date TEXT NOT NULL DEFAULT '';")
+        }
         exec("""
             CREATE TABLE IF NOT EXISTS character_tool_use (
                 tool_name  TEXT    PRIMARY KEY,
@@ -689,7 +696,8 @@ public final class CharacterPersistence {
         let lifetimeSQL = """
             SELECT total_sessions, total_tool_calls, total_active_seconds,
                    current_day_active_seconds, current_day_date,
-                   streak_days, last_active_date, overwork_streak_days
+                   streak_days, last_active_date, overwork_streak_days,
+                   last_full_restore_date
             FROM character_lifetime
             WHERE id = 1
             """
@@ -704,6 +712,7 @@ public final class CharacterPersistence {
                 stats.stats.streakDays = Int(sqlite3_column_int64(lifeStmt, 5))
                 stats.stats.lastActiveDate = columnText(lifeStmt, 6) ?? ""
                 stats.stats.overworkStreakDays = Int(sqlite3_column_int64(lifeStmt, 7))
+                stats.stats.lastFullRestoreDate = columnText(lifeStmt, 8) ?? ""
             }
         }
 
@@ -810,8 +819,9 @@ public final class CharacterPersistence {
             INSERT INTO character_lifetime(
                 id, total_sessions, total_tool_calls, total_active_seconds,
                 current_day_active_seconds, current_day_date,
-                streak_days, last_active_date, overwork_streak_days
-            ) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?)
+                streak_days, last_active_date, overwork_streak_days,
+                last_full_restore_date
+            ) VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 total_sessions = excluded.total_sessions,
                 total_tool_calls = excluded.total_tool_calls,
@@ -820,7 +830,8 @@ public final class CharacterPersistence {
                 current_day_date = excluded.current_day_date,
                 streak_days = excluded.streak_days,
                 last_active_date = excluded.last_active_date,
-                overwork_streak_days = excluded.overwork_streak_days
+                overwork_streak_days = excluded.overwork_streak_days,
+                last_full_restore_date = excluded.last_full_restore_date
             """
         guard let stmt = prepare(sql) else { return false }
         defer { sqlite3_finalize(stmt) }
@@ -832,6 +843,7 @@ public final class CharacterPersistence {
         bind(stmt, 6, int: Int64(stats.stats.streakDays))
         bind(stmt, 7, text: stats.stats.lastActiveDate)
         bind(stmt, 8, int: Int64(stats.stats.overworkStreakDays))
+        bind(stmt, 9, text: stats.stats.lastFullRestoreDate)
         return sqlite3_step(stmt) == SQLITE_DONE
     }
 
@@ -1111,6 +1123,8 @@ public final class CharacterPersistence {
                 stats.stats.lastActiveDate = value
             case ("overworkStreakDays", .int(let value)):
                 stats.stats.overworkStreakDays = value
+            case ("lastFullRestoreDate", .string(let value)):
+                stats.stats.lastFullRestoreDate = value
             default:
                 break
             }

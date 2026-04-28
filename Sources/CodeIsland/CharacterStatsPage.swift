@@ -5,6 +5,7 @@ import CodeIslandCore
 struct CharacterStatsPage: View {
     @ObservedObject private var l10n = L10n.shared
     @State private var showResetConfirm = false
+    @State private var showRestoreConfirm = false
     @State private var engine = CharacterEngine.shared
     private var stats: CharacterStats { engine.characterStats }
 
@@ -135,6 +136,33 @@ struct CharacterStatsPage: View {
                     set: { engine.setPaused($0) }
                 ))
 
+                // Once-per-day full vital restore. Engine guards on
+                // `canFullRestoreToday` (compares lastFullRestoreDate to
+                // today's natural-day string) — UI mirrors that gate so the
+                // disabled state and the confirm action stay in sync.
+                VStack(alignment: .leading, spacing: 4) {
+                    Button {
+                        showRestoreConfirm = true
+                    } label: {
+                        Label(l10n["character.settings.fullRestore"],
+                              systemImage: "heart.circle.fill")
+                    }
+                    .disabled(!engine.canFullRestoreToday)
+
+                    if !engine.canFullRestoreToday {
+                        Text(l10n["character.settings.fullRestore.usedToday"])
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .confirmationDialog(l10n["character.settings.fullRestore.confirm"],
+                                    isPresented: $showRestoreConfirm,
+                                    titleVisibility: .visible) {
+                    Button(l10n["character.settings.fullRestore"]) {
+                        _ = engine.tryFullRestore()
+                    }
+                }
+
                 HStack(spacing: 12) {
                     Button {
                         _ = engine.rebuild()
@@ -238,7 +266,7 @@ struct CharacterStatsPage: View {
     private var last7DaysChart: some View {
         let rows = engine.last7DaysActive()
 
-        if rows.isEmpty {
+        if rows.isEmpty || rows.allSatisfy({ $0.seconds <= 0 }) {
             return AnyView(
                 Text(l10n["character.stats.last7days.empty"])
                     .font(.system(size: 11))

@@ -11,6 +11,11 @@ struct CharacterPanelView: View {
 
     private var stats: CharacterStats { engine.characterStats }
     private var currentMood: MascotMood { engine.currentMood }
+    /// Aggregated session status maintained by AppState.refreshDerivedState.
+    /// Drives the mascot animation: real work statuses (.processing/.running/
+    /// .waitingApproval/.waitingQuestion) override mood, only .idle falls
+    /// through to the mood-driven sleeping/neutral sprite.
+    private var mascotStatus: AgentStatus { appState.status }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,14 +52,16 @@ struct CharacterPanelView: View {
                 ZStack(alignment: .topTrailing) {
                     MascotView(
                         source: defaultSource,
-                        status: .idle,
+                        status: mascotStatus,
                         mood: currentMood,
                         size: 22,
                         animated: true
                     )
-                    .id("\(defaultSource)-\(currentMood.rawValue)")
+                    .id("\(defaultSource)-\(mascotStatus)-\(currentMood.rawValue)")
 
-                    if currentMood != .neutral {
+                    // Mood badge only meaningful while idle — work statuses
+                    // already convey "working" through the animation itself.
+                    if mascotStatus == .idle && currentMood != .neutral {
                         Image(systemName: moodBadgeIcon)
                             .font(.system(size: 6, weight: .bold))
                             .foregroundStyle(moodBadgeColor)
@@ -74,6 +81,7 @@ struct CharacterPanelView: View {
 
     private var moodBadgeIcon: String {
         switch currentMood {
+        case .critical: return "exclamationmark.triangle.fill"
         case .sick: return "cross.fill"
         case .tired: return "bolt.slash.fill"
         case .hungry: return "fork.knife"
@@ -85,6 +93,7 @@ struct CharacterPanelView: View {
 
     private var moodBadgeColor: Color {
         switch currentMood {
+        case .critical: return Color(red: 1.0, green: 0.32, blue: 0.32)
         case .sick: return Color(red: 0.45, green: 1.0, blue: 0.45)
         case .tired: return Color(red: 0.45, green: 0.55, blue: 1.0)
         case .hungry: return Color(red: 1.0, green: 0.72, blue: 0.35)

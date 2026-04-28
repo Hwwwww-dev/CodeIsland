@@ -5,7 +5,8 @@ import Foundation
 /// Derived display mood for the active mascot. Orthogonal to AgentStatus.
 /// Only applies when AgentStatus == .idle; active statuses always win.
 public enum MascotMood: String, Codable, Sendable, Equatable {
-    case sick     // health < 30  (priority 1 — highest)
+    case critical // ≥2 vitals < 30  (priority 0 — highest, composite burnout)
+    case sick     // health < 30  (priority 1)
     case tired    // energy < 30  (priority 2)
     case hungry   // hunger < 30  (priority 3)
     case sad      // mood < 30    (priority 4)
@@ -74,6 +75,10 @@ public struct LifetimeStats: Codable, Sendable, Equatable {
     public var toolUseCount:           [String: Int] = [:]
     public var cliUseCount:            [String: Int] = [:]
     public var overworkStreakDays:     Int = 0
+    /// Date (yyyy-MM-dd) the manual "restore all vitals to 100" button was
+    /// last used. Empty string means never used. The button's once-per-day
+    /// gate compares against `LifetimeStats.todayString`.
+    public var lastFullRestoreDate:    String = ""
     // last7DaysActiveSeconds removed; data now lives in character_daily_active SQLite table.
     // Query via CharacterPersistence.last7DaysActive() or CharacterEngine.last7DaysActive().
 
@@ -132,7 +137,17 @@ public struct CharacterStats: Codable, Sendable, Equatable {
     // MARK: Mood derivation
 
     /// Derives the current MascotMood from vital stats using priority ordering.
+    /// Composite burnout (.critical) takes precedence: when 2 or more vitals
+    /// are below 30, single-axis priority becomes misleading ("you're tired"
+    /// when you're actually starving AND tired AND sad). Single-axis moods
+    /// kick in only when exactly one vital is in the red.
     public var derivedMood: MascotMood {
+        let lowCount =
+            (vital.health < 30 ? 1 : 0) +
+            (vital.energy < 30 ? 1 : 0) +
+            (vital.hunger < 30 ? 1 : 0) +
+            (vital.mood   < 30 ? 1 : 0)
+        if lowCount >= 2 { return .critical }
         if vital.health < 30 { return .sick }
         if vital.energy < 30 { return .tired }
         if vital.hunger < 30 { return .hungry }

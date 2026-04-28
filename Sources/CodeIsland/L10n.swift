@@ -301,6 +301,9 @@ final class L10n: ObservableObject {
         "character.settings.rebuild": "Rebuild Statistics",
         "character.settings.reset": "Reset Character Data",
         "character.settings.resetConfirm": "This deletes all stats and cannot be undone.",
+        "character.settings.fullRestore": "Restore Vitals",
+        "character.settings.fullRestore.confirm": "Restore all vitals to 100? Once per day.",
+        "character.settings.fullRestore.usedToday": "Already used today — available again tomorrow.",
         "character.panel.title": "ANGEL",
 
         // Character section headers
@@ -594,6 +597,9 @@ final class L10n: ObservableObject {
         "character.settings.rebuild": "重建统计",
         "character.settings.reset": "重置角色数据",
         "character.settings.resetConfirm": "此操作将删除所有统计数据且无法撤销。",
+        "character.settings.fullRestore": "恢复生命属性",
+        "character.settings.fullRestore.confirm": "将所有生命属性恢复至 100？每日仅限一次。",
+        "character.settings.fullRestore.usedToday": "今日已使用——明天再来。",
         "character.panel.title": "ANGEL",
 
         // 角色区块标题
@@ -887,6 +893,9 @@ final class L10n: ObservableObject {
         "character.settings.rebuild": "統計を再構築",
         "character.settings.reset": "キャラクターデータをリセット",
         "character.settings.resetConfirm": "全データが削除され、元に戻せません。",
+        "character.settings.fullRestore": "バイタルを回復",
+        "character.settings.fullRestore.confirm": "全バイタルを 100 に回復しますか？1 日 1 回のみ。",
+        "character.settings.fullRestore.usedToday": "本日は使用済み — 明日また使えます。",
         "character.panel.title": "ANGEL",
 
         // キャラクターセクション見出し
@@ -1180,6 +1189,9 @@ final class L10n: ObservableObject {
         "character.settings.rebuild": "통계 재구성",
         "character.settings.reset": "캐릭터 데이터 초기화",
         "character.settings.resetConfirm": "모든 통계가 삭제되며 되돌릴 수 없습니다.",
+        "character.settings.fullRestore": "생체 능력치 회복",
+        "character.settings.fullRestore.confirm": "모든 생체 능력치를 100으로 회복하시겠습니까? 하루 한 번만 가능합니다.",
+        "character.settings.fullRestore.usedToday": "오늘 이미 사용했습니다 — 내일 다시 가능합니다.",
         "character.panel.title": "ANGEL",
 
         // 캐릭터 섹션 헤더
@@ -1473,6 +1485,9 @@ final class L10n: ObservableObject {
         "character.settings.rebuild": "İstatistikleri Yeniden Oluştur",
         "character.settings.reset": "Karakter Verilerini Sıfırla",
         "character.settings.resetConfirm": "Tüm veriler silinecek ve geri alınamayacak.",
+        "character.settings.fullRestore": "Hayati Değerleri Yenile",
+        "character.settings.fullRestore.confirm": "Tüm hayati değerler 100'e yenilensin mi? Günde bir kez.",
+        "character.settings.fullRestore.usedToday": "Bugün zaten kullanıldı — yarın tekrar.",
         "character.panel.title": "ANGEL",
 
         // Karakter bölüm başlıkları

@@ -102,6 +102,7 @@ struct WorkBuddyView: View {
     private var idleMoodScene: some View {
         switch mood {
         case .hungry:  wbHungryScene
+        case .critical:   wbTiredScene
         case .tired:   wbTiredScene
         case .sad:     wbSadScene
         case .sick:    wbSickScene

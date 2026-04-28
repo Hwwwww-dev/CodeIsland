@@ -67,6 +67,7 @@ struct KimiView: View {
     private var idleMoodScene: some View {
         switch mood {
         case .hungry:  hungryScene
+        case .critical:   tiredScene
         case .tired:   tiredScene
         case .sad:     sadScene
         case .sick:    sickScene

@@ -7,28 +7,64 @@ final class CharacterEngineTests: XCTestCase {
 
     // MARK: - Mood Derivation Priority
 
-    func testMoodSick_highestPriority() {
+    func testMoodSick_singleAxisLow() {
+        // Single vital below 30 → mapped to its single-axis mood.
+        // Multi-axis low cases now fall through to .critical (see below).
         var stats = CharacterStats()
         stats.vital.health = 20   // < 30 → sick
-        stats.vital.energy = 20   // also < 30
+        stats.vital.energy = 50
+        stats.vital.hunger = 50
+        stats.vital.mood   = 50
         XCTAssertEqual(stats.derivedMood, .sick)
     }
 
-    func testMoodTired_whenEnergyLow_healthOk() {
+    func testMoodTired_singleAxisLow() {
         var stats = CharacterStats()
         stats.vital.health = 50
         stats.vital.energy = 10   // < 30 → tired
-        stats.vital.hunger = 10   // also low but energy wins
+        stats.vital.hunger = 50
+        stats.vital.mood   = 50
         XCTAssertEqual(stats.derivedMood, .tired)
     }
 
-    func testMoodHungry_priority3() {
+    func testMoodHungry_singleAxisLow() {
         var stats = CharacterStats()
         stats.vital.health = 50
         stats.vital.energy = 50
         stats.vital.hunger = 20   // < 30 → hungry
-        stats.vital.mood   = 20   // also low but hunger wins
+        stats.vital.mood   = 50
         XCTAssertEqual(stats.derivedMood, .hungry)
+    }
+
+    func testMoodCritical_takesPrecedence_overSingleAxis() {
+        // Composite burnout: ≥2 vitals < 30 → .critical, regardless of which.
+        var stats = CharacterStats()
+        stats.vital.health = 20   // would be sick on its own
+        stats.vital.energy = 20   // would be tired on its own
+        stats.vital.hunger = 50
+        stats.vital.mood   = 50
+        XCTAssertEqual(stats.derivedMood, .critical)
+    }
+
+    func testMoodCritical_threeAxesLow() {
+        var stats = CharacterStats()
+        stats.vital.health = 50
+        stats.vital.energy = 0.2
+        stats.vital.hunger = 50
+        stats.vital.mood   = 22.2
+        // Real-world example from production: energy + mood both red →
+        // burnout, not just "tired".
+        XCTAssertEqual(stats.derivedMood, .critical)
+    }
+
+    func testMoodSingleAxis_atBoundary_doesNotTriggerCritical() {
+        // 29.99 is "low" (<30), 30 is fine. Only one below 30 → single-axis.
+        var stats = CharacterStats()
+        stats.vital.health = 30   // exactly 30, not <30
+        stats.vital.energy = 29.9 // < 30 → tired (only this one)
+        stats.vital.hunger = 30
+        stats.vital.mood   = 30
+        XCTAssertEqual(stats.derivedMood, .tired)
     }
 
     func testMoodSad_priority4() {
@@ -357,11 +393,14 @@ final class CharacterEngineTests: XCTestCase {
             "hook_event_name": "PostStop",
             "session_id": sid,
         ]),
-                      sessionContext: CharacterSessionContext(totalTools: 0))
+                      sessionContext: CharacterSessionContext(totalTools: 0,
+                                                              hasActiveSession: true))
 
         // No meal (0 tools). hunger is a driver — mood events do not propagate to it.
-        // Only path: 6 min × 4/h hunger decay = -0.4. Net: 50 - 0.4 = 49.6.
-        XCTAssertEqual(engine.characterStats.vital.hunger, 49.6, accuracy: 0.1)
+        // Active path: 6 min × 4/h hunger decay = -0.4, plus the new damped
+        // active-recovery channel adds ~+0.1 toward the 60 ceiling (rate ×
+        // 0.1 damping over 6 min effective). Net: 50 - 0.4 + 0.1 ≈ 49.7.
+        XCTAssertEqual(engine.characterStats.vital.hunger, 49.7, accuracy: 0.2)
     }
 
     @MainActor
@@ -392,8 +431,12 @@ final class CharacterEngineTests: XCTestCase {
             engine.handle(event: try makeHookEvent([
                 "hook_event_name": "PostStop",
                 "session_id": sid,
-            ]), sessionContext: CharacterSessionContext(totalTools: testCase.tools))
+            ]), sessionContext: CharacterSessionContext(totalTools: testCase.tools,
+                                                        hasActiveSession: true))
 
+            // hasActiveSession=true keeps the trailing tick on the active path
+            // (under the rebalanced model, idle ticks would route hunger toward
+            // its idle ceiling instead of decaying).
             let decay = Double(testCase.minutes) / 60.0 * 4.0
             // Asymmetric coupling: hunger is a driver, no mood/energy back-propagation.
             // Only paths: PostStop meal +reward, and the elapsed hunger decay.
@@ -423,10 +466,11 @@ final class CharacterEngineTests: XCTestCase {
         engine.handle(event: try makeHookEvent([
             "hook_event_name": "PostStop",
             "session_id": sid,
-        ]), sessionContext: CharacterSessionContext(totalTools: 5))
+        ]), sessionContext: CharacterSessionContext(totalTools: 5, hasActiveSession: true))
 
         // 5min active + 5 tools → meal band (300s, 5, 4) → reward=4.
         // hunger is a driver, no back-propagation: 50 + 4 - (5/60×4) = 53.67.
+        // hasActiveSession=true keeps the trailing tick on the active path.
         XCTAssertEqual(engine.characterStats.vital.hunger, 50 + 4.0 - (5.0 / 60.0 * 4.0), accuracy: 0.1)
     }
 
@@ -439,26 +483,31 @@ final class CharacterEngineTests: XCTestCase {
         let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
         let sid = "start-before-prompt"
 
+        // hasActiveSession=true on every event so the trailing tick stays on
+        // the active (decay) path. Without it the rebalanced model would route
+        // the 2h gap into idle recovery instead of decay.
+        let activeCtx = CharacterSessionContext(hasActiveSession: true)
         engine.handle(event: try makeHookEvent([
             "hook_event_name": "SessionStart",
             "session_id": sid,
-        ]), sessionContext: nil)
+        ]), sessionContext: activeCtx)
 
         now = now.addingTimeInterval(2 * 3600)
         engine.handle(event: try makeHookEvent([
             "hook_event_name": "UserPromptSubmit",
             "session_id": sid,
-        ]), sessionContext: nil)
+        ]), sessionContext: activeCtx)
 
         now = now.addingTimeInterval(60)
         engine.handle(event: try makeHookEvent([
             "hook_event_name": "PostStop",
             "session_id": sid,
-        ]), sessionContext: CharacterSessionContext(totalTools: 30))
+        ]), sessionContext: CharacterSessionContext(totalTools: 30, hasActiveSession: true))
 
         // 60s active prompt window + 30 tools → meal band (60s, 2, 1) → reward=1.
-        // hunger is a driver — only its own decay (2h+60s × 4/h ≈ -8.07) and meal +1 apply.
-        // 50 - 8 (2h decay before meal) + 1 (meal) - 0.067 (60s decay after meal) ≈ 42.93.
+        // Sims-style hunger model: pure decay (no active recovery), no
+        // coupling propagation. 50 - 8 (2h decay) + 1 (meal) - 0.067 (60s
+        // post-meal decay) ≈ 42.93.
         XCTAssertEqual(engine.characterStats.vital.hunger, 42.93, accuracy: 0.1)
     }
 
@@ -1536,7 +1585,10 @@ final class CharacterEngineTests: XCTestCase {
 
     @MainActor
     func testCoupling_neutralVitalsDontMoveHealth() {
-        // hunger=mood=energy=50: exact neutral (contribution=0 each), health unchanged.
+        // hunger=mood=energy=50: exact neutral (contribution=0 each), health
+        // movement bounded by the active-damped recovery channel only (no
+        // coupling kick). Over 1s the recovery push is ~0.0002 (damped 0.1×
+        // health idle rate, ε snap not reached) — well under the 0.01 floor.
         var stats = CharacterStats()
         stats.vital.hunger = 50
         stats.vital.mood   = 50
@@ -1544,11 +1596,10 @@ final class CharacterEngineTests: XCTestCase {
         stats.vital.health = 50
         let t0 = Date(timeIntervalSince1970: 1_700_000_000)
         stats.lastTickedAt = t0
-        let t1 = t0.addingTimeInterval(1)  // 1 second — negligible decay
+        let t1 = t0.addingTimeInterval(1)  // 1 second — negligible movement
         let engine = CharacterEngine.makeForTesting(stats: stats)
         engine.tick(now: t1, isAnySessionActive: true)
-        // dt=1s: hunger decays by ~0.00111, contrib ~-0.0000222 → health delta ≈ 0. Negligible.
-        XCTAssertEqual(engine.characterStats.vital.health, 50, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.vital.health, 50, accuracy: 0.01)
     }
 
     // MARK: - Task 8: Global mood equilibrium drift
@@ -1598,27 +1649,26 @@ final class CharacterEngineTests: XCTestCase {
     func testRestDay_doesNotPunishHealth() {
         var stats = CharacterStats()
         stats.vital.health = 80
-        // Asymmetric coupling: 24h hunger decay (-96, clamped) propagates -19.2 to health
-        // (hunger→health=0.2). Idle energy fully recovers from 60→100 (+40). With normal
-        // body state (energy≥60, delta>0) multiplier=1.5, propagating +18 to health
-        // (energy→health=0.3×1.5). Net: 80 - 19.2 + 18 ≈ 78.79. No daily-roll
-        // fires (<1h active), so we only see propagation drift.
+        // Sims-style model: vital coupling weights are zeroed; health moves
+        // only via body_score thresholds and daily roll. Over 24h idle the
+        // body settles into "okay-zone" (body_score ~50 in the 30–70 dead
+        // band), so health barely budges. <1h active → no daily-roll fires.
+        // Result: health stays at 80.
         stats.vital.hunger = 60; stats.vital.energy = 60; stats.vital.mood = 60
         stats.stats.currentDayActiveSeconds = 600
         stats.lastTickedAt = calendarDay(offsetDays: -1)
         let now = calendarDay(offsetDays: 0).addingTimeInterval(60)
         let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
         engine.tick(now: now)
-        XCTAssertEqual(engine.characterStats.vital.health, 78.79, accuracy: 0.5)
+        XCTAssertEqual(engine.characterStats.vital.health, 80.0, accuracy: 0.5)
     }
 
     @MainActor
     func testOverwork_singleDay_doesNotPunishHealth() {
         var stats = CharacterStats()
         stats.vital.health = 80
-        // Same propagation drift as testRestDay (~78.79). Streak=1 < 3, no -3 penalty applied.
-        // The test name's intent is "single overwork day adds NO penalty" — we still verify
-        // that by checking health did not drop a further 3 below the propagation baseline.
+        // 24h elapsed in idle path; body_score sits in dead band → health
+        // doesn't drift. Streak increments to 1 but <3 → no -3 punishment.
         stats.vital.hunger = 60; stats.vital.energy = 60; stats.vital.mood = 60
         stats.stats.currentDayActiveSeconds = 9 * 3600 // 9h, > 8h threshold
         stats.stats.overworkStreakDays = 0
@@ -1626,7 +1676,7 @@ final class CharacterEngineTests: XCTestCase {
         let now = calendarDay(offsetDays: 0).addingTimeInterval(60)
         let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
         engine.tick(now: now)
-        XCTAssertEqual(engine.characterStats.vital.health, 78.79, accuracy: 0.5)
+        XCTAssertEqual(engine.characterStats.vital.health, 80.0, accuracy: 0.5)
         XCTAssertEqual(engine.characterStats.stats.overworkStreakDays, 1)
     }
 
@@ -1634,9 +1684,8 @@ final class CharacterEngineTests: XCTestCase {
     func testOverwork_thirdConsecutiveDay_punishesHealth() {
         var stats = CharacterStats()
         stats.vital.health = 80
-        // Propagation baseline ≈78.79 (see testRestDay). Streak=3 triggers daily-roll
-        // health -3. mood/health are indicators (no out-edges), so the -3 stays local.
-        // Net: ~78.79 - 3 = 75.79. The -3 penalty is the test's actual intent.
+        // body_score in dead band (no continuous drift); streak=3 fires the
+        // discrete daily-roll -3 health. Net: 80 - 3 = 77.
         stats.vital.hunger = 60; stats.vital.energy = 60; stats.vital.mood = 60
         stats.stats.currentDayActiveSeconds = 9 * 3600
         stats.stats.overworkStreakDays = 2
@@ -1644,7 +1693,7 @@ final class CharacterEngineTests: XCTestCase {
         let now = calendarDay(offsetDays: 0).addingTimeInterval(60)
         let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
         engine.tick(now: now)
-        XCTAssertEqual(engine.characterStats.vital.health, 75.79, accuracy: 0.5)
+        XCTAssertEqual(engine.characterStats.vital.health, 77.0, accuracy: 0.5)
         XCTAssertEqual(engine.characterStats.stats.overworkStreakDays, 3)
     }
 
@@ -1665,16 +1714,18 @@ final class CharacterEngineTests: XCTestCase {
     @MainActor
     func testHealthyDay_grantsHealthBonus() {
         var stats = CharacterStats()
-        stats.vital.health = 80
-        // Propagation baseline ≈78.79 (see testRestDay). Healthy day adds +3 directly to
-        // health (indicator, no out-edges). Net: ~78.79 + 3 = 81.79.
+        // Sims-style model: health moves only via body_score continuous
+        // drift + daily roll. body_score over 24h sits mostly in dead band,
+        // so the assertion focuses on the discrete +3 daily-roll bonus
+        // (3h active ∈ [1h, 8h]). Net: 40 + 3 = 43.
+        stats.vital.health = 40
         stats.vital.hunger = 60; stats.vital.energy = 60; stats.vital.mood = 60
         stats.stats.currentDayActiveSeconds = 3 * 3600
         stats.lastTickedAt = calendarDay(offsetDays: -1)
         let now = calendarDay(offsetDays: 0).addingTimeInterval(60)
         let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
         engine.tick(now: now)
-        XCTAssertEqual(engine.characterStats.vital.health, 81.79, accuracy: 0.5)
+        XCTAssertEqual(engine.characterStats.vital.health, 43.0, accuracy: 0.5)
     }
 
     // MARK: - Task 6: Meal also restores energy
@@ -1721,9 +1772,12 @@ final class CharacterEngineTests: XCTestCase {
         engine.handle(event: evt1, sessionContext: nil)
         engine.handle(event: evt2, sessionContext: nil)
 
-        // mood +2 from fallback, then two tool-success events each deduct 0.2 energy
-        // which propagates -0.06 to mood each time → final mood ≈ 51.88.
-        XCTAssertEqual(engine.characterStats.vital.mood, 51.88, accuracy: 0.1)
+        // mood +2 from fallback prompt-turn bonus. Per-tool energy cost halved
+        // (-0.2 → -0.1) but retained — two tool successes deduct -0.1 energy
+        // each, propagating -0.1 × 0.3 (energy→mood) × 1.0 (driver≥60, but at
+        // exactly 60 the gain branch fires; this delta is negative so flat
+        // 1.0×) = -0.03 mood per tool. Net: 50 + 2 - 0.06 ≈ 51.94.
+        XCTAssertEqual(engine.characterStats.vital.mood, 51.94, accuracy: 0.1)
         XCTAssertEqual(engine.characterStats.cyber.collab, 2, accuracy: 0.001)
     }
 

@@ -31,28 +31,58 @@ public struct CharacterSessionContext: Sendable {
 /// Clamps "you've been away 30 days" devastation to a 7-day maximum.
 private let maxDecayHours: Double = 7 * 24
 
-/// Hunger decay per hour. Hunger here = "needs feeding via activity + tool calls"
-/// (work feeds the character), not biological hunger. 100 -> hungry threshold (30)
-/// takes ~17.5h of pure absence; one 8h workday tops up easily.
+/// Hunger decay per hour while a session is active. Hunger here = "needs
+/// feeding via activity + tool calls" (work feeds the character), not biological
+/// hunger. 100 → hungry threshold (30) takes ~17.5h of sustained work; one 8h
+/// workday tops up easily via meal rewards.
 private let hungerDecayPerHour: Double = 4.0
-/// Idle-only energy recovery rate (exponential approach to 100).
-/// Time constant τ = 1/rate minutes. 0.075 → τ ≈ 13.3 min; e.g. 30→80 takes ~17 min,
-/// 0→90 takes ~31 min, 0→99 takes ~61 min. Anchored on the "30→80 in 15–20 min"
-/// felt-recovery target — fast enough to come back from a half-day session in
-/// under 20 min, slow enough that a full day off (0→full) still takes ~1 hour.
-private let idleEnergyRecoveryPerMinute: Double = 0.075
+/// Energy decay per hour while a session is active. The new baseline drain;
+/// calibrated to match `hungerDecayPerHour` so the two drivers move in
+/// lockstep — an 8h workday without meals lands both at ~70, a 24h grind
+/// drives both into the hungry/tired zone.
+private let energyDecayPerHourActive: Double = 4.0
+/// Per-tool energy cost on successful PostToolUse. Down from `-0.2` (which
+/// could spike `-10` per turn under 50-tool parallel-agent batches) to
+/// `-0.1`, retained on top of the time-based `energyDecayPerHourActive`
+/// baseline so heavy tool usage still feels heavier than light prompts —
+/// just no longer crashing energy in a single turn.
+private let energyCostPerToolSuccess: Double = 0.1
 
-/// Snap-to-full epsilon for idle energy recovery. Pure exponential approach
-/// only ever asymptotes to 100, never reaches it. When the recovered energy
-/// would land within this distance of 100, we pin to exactly 100 — the user
-/// expects "fully rested" to be a real terminal state, not an infinite tail.
-/// At r=0.075, ε=0.1 means 0→100 takes ~92 min; gauge resolution ~1 unit so
-/// 0.1 is invisible to the user but lets the value actually terminate.
-private let idleEnergyRecoveryFullThreshold: Double = 0.1
+/// Idle recovery rates (exp approach toward each vital's natural ceiling).
+/// Different τ per vital is deliberate — anthropomorphic: rest restores energy
+/// fastest, mood medium, health slowly; hunger only refills marginally without
+/// food. All four share the same exponential shape (consistent UI feel) but
+/// land at different ceilings without explicit refill events.
+///
+///   ceiling < 100 means "rest alone gets you to OK, not great";
+///   pushing past the ceiling requires the matching event channel
+///   (meal for hunger/energy beyond ceiling, prompts/PostStop for mood beyond
+///   70, daily-roll healthy-day for health beyond 80).
+private let idleHungerRecoveryPerMinute: Double = 0.0167   // τ ≈ 60 min
+private let idleHungerCeiling:           Double = 60
+private let idleEnergyRecoveryPerMinute: Double = 0.075    // τ ≈ 13 min
+private let idleEnergyCeiling:           Double = 100
+private let idleMoodRecoveryPerMinute:   Double = 0.033    // τ ≈ 30 min
+private let idleMoodCeiling:             Double = 70
+private let idleHealthRecoveryPerMinute: Double = 0.00417  // τ ≈ 240 min
+private let idleHealthCeiling:           Double = 80
+
+/// Snap-to-ceiling epsilon shared across all four idle recoveries. Pure exp
+/// approach only ever asymptotes; when within ε we pin exactly to the ceiling
+/// so values terminate (resolution-invisible at ~1 gauge unit).
+private let idleRecoverySnapThreshold: Double = 0.1
 /// Cooldown after the last active session before idle recovery starts (seconds).
 /// Brief task-switching pauses (<60s) shouldn't count as rest. If a session resumes
 /// within the cooldown, the buffer just resets — no recovery happened anyway.
-private let idleEnergyRecoveryBufferSeconds: TimeInterval = 60
+private let idleRecoveryBufferSeconds: TimeInterval = 60
+
+/// Damping applied to idle-recovery rates while a session is active. The body
+/// is still healing while you're working — just much slower than at rest. At
+/// 0.1× the effective τ stretches 10× (e.g. mood τ 30min idle → 5h while
+/// active), making the recovery visually imperceptible per-minute but real
+/// over a multi-hour stretch. Set to 0 to make active = pure decay (the prior
+/// behavior); set to 1 to make rest and work indistinguishable.
+private let activeRecoveryDamping: Double = 0.1
 
 /// Minimum interval between lazy ticks (avoids per-frame recomputes).
 private let lazyTickMinInterval: TimeInterval = 1.0
@@ -71,64 +101,78 @@ private let mealRewardBands: [(seconds: Int, tools: Int, reward: Double)] = [
     (1 * 60, 2, 1),
 ]
 
-/// Vital-coupling weights: when source vital changes by ΔX, each target vital
-/// receives ΔX × weight in the same direction. Single-pass (the propagated
-/// delta does NOT trigger further propagation), so weights < 1 keep the
-/// system stable. Source-self entries are 0 (no self-feedback).
+/// Vital-coupling weights: when source vital changes by ΔX, each target
+/// vital receives ΔX × weight in the same direction.
 ///
-/// Topology is asymmetric by design:
-///   - Drivers (inputs):  hunger, energy — propagate OUT to mood/health, but
-///     are NEVER affected by other vitals. They only move via their own
-///     explicit paths (hunger decay + meal reward; idle recovery + meal +
-///     PostToolUse cost). This prevents work-in-progress from inadvertently
-///     refilling either gauge through coupling (e.g. UserPromptSubmit's
-///     mood +2 used to leak +0.8 to energy mid-session).
-///   - Indicators (outputs): mood, health — accept propagation but never
-///     propagate out. They reflect the body state without driving it.
+/// Disabled (all zero) under the Sims-style model — mood follows body via
+/// `applyMoodFollowsBody` (target = (hunger+energy)/2 with τ=1h), and
+/// health is computed from a `body_score` threshold integrator
+/// (`applyHealthFromBodyScore`). Direct event-time propagation would
+/// double-count those continuous channels.
+///
+/// Kept as a structural hook so future event handlers can opt back in
+/// without redesigning the delta plumbing.
 private enum VitalKey { case hunger, mood, energy, health }
 private let vitalCouplingWeights: [VitalKey: [VitalKey: Double]] = [
-    .hunger: [.mood: 0.5, .health: 0.2],
+    .hunger: [:],
     .mood:   [:],
-    .energy: [.mood: 0.3, .health: 0.3],
+    .energy: [:],
     .health: [:],
 ]
 
 /// Asymmetric propagation multiplier from driver vitals (hunger, energy) to
-/// mood/health. Multiplier depends on the driver's value BEFORE the delta is
-/// applied AND the sign of the delta.
+/// mood/health. Negative branch is now flat 1.0× across all driver levels —
+/// the previous 2.0× critical-zone amplification created a death spiral
+/// (already-low body received double damage on top of normal decay) that no
+/// human physiology mirrors. Positive multiplier still rewards maintaining
+/// good shape (1.5× when driver ≥ 60), so healthy bodies still amplify
+/// recovery into mood/health.
 ///
-///   driver < 30  (critical)  →  negative 2.0×  /  positive 1.0×
-///   30 ≤ d < 60  (low)       →  negative 1.5×  /  positive 1.2×
-///   driver ≥ 60  (normal)    →  negative 1.0×  /  positive 1.5×
-///
-/// Felt behavior:
-///   - Critical body → decay cascades hard, recovery barely registers
-///   - Normal body   → decay shrugs off, recovery cascades strongly
+///   any driver value, negative delta  →  1.0×
+///   driver < 30  (critical)  →  positive 1.0×
+///   30 ≤ d < 60  (low)       →  positive 1.2×
+///   driver ≥ 60  (normal)    →  positive 1.5×
 ///
 /// Applied in `applyVitalDelta` to (delta · weight), not to the driver's own
 /// delta. Single-pass — the amplified propagation does NOT recurse.
 private func propagationMultiplier(driverBefore v: Double, deltaSign: Double) -> Double {
-    let isNegative = deltaSign < 0
-    if v < 30 { return isNegative ? 2.0 : 1.0 }
-    if v < 60 { return isNegative ? 1.5 : 1.2 }
-    return     isNegative ? 1.0 : 1.5
+    if deltaSign < 0 { return 1.0 }
+    if v < 30 { return 1.0 }
+    if v < 60 { return 1.2 }
+    return 1.5
 }
-/// Mood should follow the overall body state smoothly, not via hard thresholds.
-/// We derive a target mood from a weighted geometric mean of hunger/energy/health
-/// and move toward it gradually on each tick.
-private let moodEquilibriumWeights = (hunger: 0.35, energy: 0.45, health: 0.20)
+/// Mood follows body state — specifically the average of hunger and energy,
+/// the two drivers. Health is excluded: it's the long-arc accumulator and
+/// its slow drift would muddle mood's fast-twitch character. Arithmetic
+/// mean (50/50) for simplicity — Sims-style: cranky if either hungry OR
+/// tired, fine if both okay.
+private let moodFollowsBodyWeights = (hunger: 0.5, energy: 0.5)
 /// Drift rate (per hour) for mood toward the weighted geometric mean of
-/// hunger/energy/health. Bumped from 0.25 (τ=4h) to 0.5 (τ=2h) so a body that
-/// just took a hit (energy crash, hunger drop) doesn't leave mood hanging
-/// happily for half a workday. Combined with `moodOvershootCap` below.
-private let moodEquilibriumRatePerHour: Double = 0.5
+/// hunger/energy/health. Set to 1.0 (τ=1h) so mood reacts quickly to body
+/// state — drops to ~63% of the gap within 1h, ~95% within 3h. Mood is the
+/// fast-twitch indicator (the user-visible expression of "how the body is
+/// doing right now"); hunger/energy are the slow-twitch drivers, health is
+/// the long-arc accumulator. Event spikes (prompts +2 / PostStop +3 / fail
+/// -2 / deny -3) ride on top, capped above target by `moodOvershootCap`.
+private let moodEquilibriumRatePerHour: Double = 1.0
 /// Maximum amount mood is allowed to sit ABOVE the equilibrium target.
 /// Event-driven mood rewards (UserPromptSubmit +2, PostStop +3, success bonus)
 /// can spike mood above what the body deserves, but only by this much; any
 /// excess is yanked down to `target + cap` immediately on the next tick. No
 /// lower cap — feeling worse than the body deserves is allowed (bad streak
 /// emotions persist), and positive events naturally pull it back.
-private let moodOvershootCap: Double = 15
+private let moodOvershootCap: Double = 8
+/// Health threshold integrator parameters (Sims-style "long-arc accumulator"):
+/// each tick computes body_score = (hunger + energy + mood) / 3 and steers
+/// health based on whether the body is sustaining a deficit or a surplus.
+/// Calibrated so health barely moves under typical mixed days, but a long
+/// burnout grind drains it noticeably and a sustained healthy stretch lifts
+/// it. Sub-hour transients (one bad lunch) don't show up.
+private let bodyScoreLowThreshold:           Double = 30
+private let bodyScoreHighThreshold:          Double = 70
+private let healthDecayPerHourLowBody:       Double = 0.3
+private let healthRecoveryPerHourHighBody:   Double = 0.2
+
 /// Snap-to-target epsilon for mood equilibrium drift. Same rationale as
 /// `idleEnergyRecoveryFullThreshold` — exp drift only ever asymptotes; we
 /// pin to the geometric-mean target when within ε so the gauge can actually
@@ -425,12 +469,22 @@ public final class CharacterEngine {
         case "SubagentStart":
             countSessionIfFirst(sessionId: sessionId)
             characterStats.cyber.collab += 4
-            startPromptTurn(sessionId: sessionId, now: now)
+            // Subagent events share the parent session_id. Do NOT call
+            // startPromptTurn here — it would overwrite the parent's
+            // promptStartTimes and discard accumulated meal active seconds.
+            // ensurePromptTurnStarted is a no-op when a turn is already running
+            // (the normal case after UserPromptSubmit) and only seeds a
+            // fallback turn when the CLI never emitted UserPromptSubmit.
+            _ = ensurePromptTurnStarted(sessionId: sessionId, now: now)
 
         case "SubagentStop":
             countSessionIfFirst(sessionId: sessionId)
+            // Force-credit the elapsed slice into the parent's prompt turn so
+            // long subagent runs are reflected promptly, but DO NOT clear
+            // tracking — the parent prompt turn is still alive and PostStop
+            // will close it. Clearing here would zero out
+            // sessionMealActiveSeconds and starve the meal reward.
             _ = creditPromptActiveTime(sessionId: sessionId, now: now, force: true)
-            clearSessionTracking(sessionId: sessionId)
 
         default:
             break
@@ -455,39 +509,42 @@ public final class CharacterEngine {
             return
         }
 
+        // ── Drivers: hunger and energy ──────────────────────────────────
+        // Hunger decays unconditionally (active OR idle) — being idle doesn't
+        // make you less hungry; only `meal` events at PostStop fill it.
         applyVitalDelta(.hunger, -dt * hungerDecayPerHour)
 
+        // Energy decays only while a session is active. Idle is "rest", and
+        // energy refills exponentially toward 100 during rest.
         if isAnySessionActive {
-            // Active work resets the idle cooldown — any prior buffer accumulation is dropped.
             lastActiveAt = now
+            applyVitalDelta(.energy, -dt * energyDecayPerHourActive)
         } else {
-            // Idle energy recovery only fires once we've been idle past the cooldown.
-            // recoveryStart is the earlier of: cooldown expiry, or last tick (so we never
-            // double-count time that previous ticks already credited).
-            let bufferEnd = lastActiveAt.addingTimeInterval(idleEnergyRecoveryBufferSeconds)
+            // Energy idle recovery — gated by the 60s task-switch buffer so
+            // brief pauses don't count as rest.
+            let bufferEnd = lastActiveAt.addingTimeInterval(idleRecoveryBufferSeconds)
             let recoveryStart = max(bufferEnd, characterStats.lastTickedAt)
             if now > recoveryStart {
                 let dtMinutes = now.timeIntervalSince(recoveryStart) / 60
-                let decayFactor = exp(-idleEnergyRecoveryPerMinute * dtMinutes)
-                let e0 = characterStats.vital.energy
-                let proposed = 100 - (100 - e0) * decayFactor
-                // Snap-to-full: exp tail asymptotes; force the gauge to land
-                // exactly at 100 once we're within ε. Final-stretch propagation
-                // (mood/health) still flows through applyVitalDelta on this push.
-                let target = (proposed >= 100 - idleEnergyRecoveryFullThreshold) ? 100.0 : proposed
-                let energyDelta = target - e0
-                metadata.derived["idleEnergyRecoveryDelta"] = .double(energyDelta)
-                if target == 100.0 {
-                    metadata.derived["idleEnergyRecoverySnappedFull"] = .bool(true)
-                }
-                applyVitalDelta(.energy, energyDelta)
+                applyIdleRecovery(.energy, ratePerMinute: idleEnergyRecoveryPerMinute,
+                                  ceiling: idleEnergyCeiling, dtMinutes: dtMinutes,
+                                  metadataPrefix: "idleEnergy", metadata: &metadata)
+                // Mood self-soothes during rest — even if body state is bad,
+                // sitting quietly nudges mood toward 70. Active path leaves
+                // this off; mood there is governed by body-follow + events.
+                applyIdleRecovery(.mood, ratePerMinute: idleMoodRecoveryPerMinute,
+                                  ceiling: idleMoodCeiling, dtMinutes: dtMinutes,
+                                  metadataPrefix: "idleMood", metadata: &metadata)
             } else {
-                metadata.derived["idleEnergyRecoveryBuffered"] = .bool(true)
+                metadata.derived["idleRecoveryBuffered"] = .bool(true)
             }
         }
 
+        // Order matters: mood follows the JUST-updated hunger/energy values,
+        // then health observes the JUST-updated mood (its third input).
+        applyMoodFollowsBody(elapsedHours: dt, metadata: &metadata)
+        applyHealthFromBodyScore(elapsedHours: dt, metadata: &metadata)
         evaluateDailyRoll(now: now, metadata: &metadata)
-        applyMoodEquilibriumDrift(elapsedHours: dt, metadata: &metadata)
         characterStats.lastTickedAt = now
     }
 
@@ -639,30 +696,82 @@ public final class CharacterEngine {
         persistence?.saveNow(characterStats)
     }
 
-    /// Returns (date, activeSeconds) for the last 7 calendar days with non-zero activity.
-    /// Merges in-memory currentDayActiveSeconds for today if not yet flushed to the DB.
-    /// TODO(ui): consume last7DaysActive() in last7DaysChart
+    /// Returns (date, activeSeconds) for the last 7 calendar days, ascending.
+    /// Always 7 entries: missing days are zero-filled so the chart can render
+    /// a stable 7-column layout. Merges in-memory currentDayActiveSeconds for
+    /// today if not yet flushed to the DB.
     public func last7DaysActive() -> [(date: Date, seconds: Int)] {
-        var rows = persistence?.last7DaysActive() ?? []
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: nowProvider())
+        let stored = persistence?.last7DaysActive() ?? []
+        var byDay: [String: Int] = [:]
+        for row in stored {
+            byDay[Self.dayFmt.string(from: row.date)] = row.seconds
+        }
 
-        // Merge today's in-memory value (may not be flushed yet)
-        let todayStr = LifetimeStats.todayString
+        // In-memory today overrides DB value (may not be flushed yet)
         let inMemoryToday = characterStats.stats.currentDayActiveSeconds
         if inMemoryToday > 0 {
-            let dayFmt = Self.dayFmt
-            if let todayDate = dayFmt.date(from: todayStr) {
-                // Replace or append today's entry
-                if let idx = rows.firstIndex(where: {
-                    Self.dayFmt.string(from: $0.date) == todayStr
-                }) {
-                    rows[idx] = (date: todayDate, seconds: inMemoryToday)
-                } else {
-                    rows.append((date: todayDate, seconds: inMemoryToday))
-                    rows.sort { $0.date < $1.date }
-                }
-            }
+            byDay[Self.dayFmt.string(from: today)] = inMemoryToday
         }
-        return rows
+
+        var result: [(date: Date, seconds: Int)] = []
+        for offset in (0...6).reversed() {
+            guard let day = cal.date(byAdding: .day, value: -offset, to: today) else { continue }
+            let key = Self.dayFmt.string(from: day)
+            result.append((date: day, seconds: byDay[key] ?? 0))
+        }
+        return result
+    }
+
+    /// `true` if the once-per-day "restore all vitals to 100" button is
+    /// available right now. Compares `lastFullRestoreDate` against today's
+    /// natural-day string — resets at midnight local time.
+    public var canFullRestoreToday: Bool {
+        characterStats.stats.lastFullRestoreDate != LifetimeStats.todayString
+    }
+
+    /// Try to fully restore hunger/energy/mood/health to 100. No-op (returns
+    /// `false`) if already used today. Logs a `FullRestore` event to the
+    /// ledger with deltas so the change is auditable. Persists immediately.
+    @discardableResult
+    public func tryFullRestore() -> Bool {
+        guard canFullRestoreToday else { return false }
+        let now = nowProvider()
+        let todayStr = LifetimeStats.todayString
+        let eventName = "FullRestore"
+        _ = runLoggedEvent(
+            kind: .systemControl,
+            name: eventName,
+            sessionID: nil,
+            source: nil,
+            providerSessionID: nil,
+            cwd: nil,
+            model: nil,
+            permissionMode: nil,
+            sessionTitle: nil,
+            remoteHostID: nil,
+            remoteHostName: nil,
+            toolName: nil,
+            toolUseID: nil,
+            agentID: nil,
+            occurredAt: now,
+            payload: ["date": .string(todayStr)],
+            derived: [:],
+            recordWhenNoDeltas: true,
+            reasonPrefix: normalizedReasonPrefix(for: eventName)
+        ) { _ in
+            // Set vitals to 100 via direct assignment (bypassing applyVitalDelta
+            // since we want a hard set, not a propagated delta). The diff vs
+            // before-snapshot is captured by runLoggedEvent's surrounding
+            // delta-recording, so the ledger still shows ±X per vital.
+            characterStats.vital.hunger = 100
+            characterStats.vital.energy = 100
+            characterStats.vital.mood = 100
+            characterStats.vital.health = 100
+            characterStats.stats.lastFullRestoreDate = todayStr
+        }
+        return true
     }
 
     /// Set paused state and persist immediately.
@@ -848,6 +957,33 @@ public final class CharacterEngine {
         characterStats.vital.clamp()
     }
 
+    /// Generic exponential idle recovery toward a per-vital ceiling. Already
+    /// at or above ceiling → no-op. Snaps to ceiling within ε so values
+    /// actually terminate (exp asymptote alone never reaches the ceiling).
+    /// Goes through `applyVitalDelta` so the standard coupling propagation
+    /// still fires (driver-vital recoveries trickle into mood/health).
+    private func applyIdleRecovery(
+        _ key: VitalKey,
+        ratePerMinute: Double,
+        ceiling: Double,
+        dtMinutes: Double,
+        metadataPrefix: String,
+        metadata: inout EventMutationMetadata
+    ) {
+        let current = currentValue(of: key)
+        guard current < ceiling else { return }
+        let decayFactor = exp(-ratePerMinute * dtMinutes)
+        let proposed = ceiling - (ceiling - current) * decayFactor
+        let target = (proposed >= ceiling - idleRecoverySnapThreshold) ? ceiling : proposed
+        let delta = target - current
+        guard delta > 0 else { return }
+        metadata.derived["\(metadataPrefix)RecoveryDelta"] = .double(delta)
+        if target == ceiling {
+            metadata.derived["\(metadataPrefix)RecoverySnappedCeiling"] = .bool(true)
+        }
+        applyVitalDelta(key, delta)
+    }
+
     private func currentValue(of key: VitalKey) -> Double {
         switch key {
         case .hunger: return characterStats.vital.hunger
@@ -946,7 +1082,11 @@ public final class CharacterEngine {
         lastToolEventTime[sessionId] = now
 
         if success {
-            applyVitalDelta(.energy, -0.2)
+            // Per-tool energy cost: kept (signal: tools-have-a-cost) but
+            // halved from -0.2 → -0.1 so a 50-tool parallel-agent batch
+            // costs ~-5 instead of ~-10. Time-based baseline decay
+            // (`energyDecayPerHourActive`) handles the steady drain.
+            applyVitalDelta(.energy, -energyCostPerToolSuccess)
 
             // Cyber attribution — exactly one dimension per successful event, by semantic.
             switch semantic {
@@ -1112,19 +1252,21 @@ public final class CharacterEngine {
         characterStats.stats.currentDayDate = todayStr
     }
 
-    private func applyMoodEquilibriumDrift(elapsedHours: Double, metadata: inout EventMutationMetadata) {
+    /// Mood follows the body — pulls toward `(hunger + energy) / 2` at
+    /// τ=1h. Fast-twitch indicator: 1h closes ~63% of the gap, 3h ~95%.
+    /// Event rewards (UserPromptSubmit +2, PostStop +3) can push mood above
+    /// the body target, but only by `moodOvershootCap`; sustained spikes
+    /// get yanked back as soon as the body underwrites them.
+    private func applyMoodFollowsBody(elapsedHours: Double, metadata: inout EventMutationMetadata) {
         guard elapsedHours > 0 else { return }
 
-        let targetMood = weightedGeometricVitalMean(
-            hunger: moodEquilibriumWeights.hunger,
-            energy: moodEquilibriumWeights.energy,
-            health: moodEquilibriumWeights.health
-        )
+        let targetMood =
+            characterStats.vital.hunger * moodFollowsBodyWeights.hunger +
+            characterStats.vital.energy * moodFollowsBodyWeights.energy
 
-        // Single-sided overshoot clamp: mood event rewards can push above target,
-        // but only by `moodOvershootCap`. Anything beyond gets yanked down BEFORE
-        // the smooth drift. No symmetric floor — undershooting target (mood low
-        // despite healthy body) is allowed and self-corrects via positive events.
+        // Single-sided overshoot clamp: events can spike mood above target,
+        // but only by `moodOvershootCap`. No symmetric floor — feeling worse
+        // than the body warrants is allowed and self-corrects via events.
         let upperCap = min(100.0, targetMood + moodOvershootCap)
         if characterStats.vital.mood > upperCap {
             let yank = characterStats.vital.mood - upperCap
@@ -1135,9 +1277,7 @@ public final class CharacterEngine {
         let rate = 1 - exp(-moodEquilibriumRatePerHour * elapsedHours)
         var moodDelta = (targetMood - characterStats.vital.mood) * rate
 
-        // Snap-to-target: exp drift asymptotes; if the post-delta value would
-        // land within ε of the target, replace the delta with the exact gap so
-        // mood actually reaches the steady state (mirrors the energy snap).
+        // Snap-to-target: exp asymptote — within ε, land exactly on target.
         let proposedGap = targetMood - (characterStats.vital.mood + moodDelta)
         var snapped = false
         if abs(proposedGap) <= moodEquilibriumSnapThreshold {
@@ -1145,11 +1285,11 @@ public final class CharacterEngine {
             snapped = true
         }
 
-        metadata.derived["moodEquilibriumTarget"] = .double(targetMood)
-        metadata.derived["moodEquilibriumRate"] = .double(rate)
-        metadata.derived["moodEquilibriumDelta"] = .double(moodDelta)
+        metadata.derived["moodFollowTarget"] = .double(targetMood)
+        metadata.derived["moodFollowRate"] = .double(rate)
+        metadata.derived["moodFollowDelta"] = .double(moodDelta)
         if snapped {
-            metadata.derived["moodEquilibriumSnapped"] = .bool(true)
+            metadata.derived["moodFollowSnapped"] = .bool(true)
         }
 
         guard abs(moodDelta) > 0.000_000_1 else { return }
@@ -1169,6 +1309,34 @@ public final class CharacterEngine {
             + Foundation.log(health) * healthWeight
 
         return exp(weightedLogSum) * 100
+    }
+
+    /// Health from the body-score threshold integrator. Each tick:
+    ///   body_score = (hunger + energy + mood) / 3
+    ///   body_score < 30 → health -= 0.3 × elapsedHours  (long-arc burnout)
+    ///   body_score > 70 → health += 0.2 × elapsedHours  (long-arc upkeep)
+    ///   30 ≤ score ≤ 70 → no change                     (transient zone)
+    /// Asymmetric: easier to lose than to gain (a bad streak burns the
+    /// reserve faster than a good one rebuilds it). Healthy-day +3 / overwork
+    /// -3 still fire on day boundaries via `evaluateDailyRoll` for clear
+    /// long-period signals; this function is the continuous component.
+    private func applyHealthFromBodyScore(elapsedHours: Double, metadata: inout EventMutationMetadata) {
+        guard elapsedHours > 0 else { return }
+        let bodyScore = (characterStats.vital.hunger
+                       + characterStats.vital.energy
+                       + characterStats.vital.mood) / 3.0
+        metadata.derived["bodyScore"] = .double(bodyScore)
+
+        let delta: Double
+        if bodyScore < bodyScoreLowThreshold {
+            delta = -healthDecayPerHourLowBody * elapsedHours
+        } else if bodyScore > bodyScoreHighThreshold {
+            delta = healthRecoveryPerHourHighBody * elapsedHours
+        } else {
+            return
+        }
+        metadata.derived["healthBodyScoreDelta"] = .double(delta)
+        applyVitalDelta(.health, delta)
     }
 
     private func startPromptTurn(sessionId: String, now: Date) {

@@ -134,6 +134,7 @@ struct QwenView: View {
     private var idleMoodScene: some View {
         switch mood {
         case .hungry:  qwenHungryScene
+        case .critical:   qwenTiredScene
         case .tired:   qwenTiredScene
         case .sad:     qwenSadScene
         case .sick:    qwenSickScene
