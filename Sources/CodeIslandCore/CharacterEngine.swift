@@ -147,16 +147,19 @@ private func propagationMultiplier(driverBefore v: Double, deltaSign: Double) ->
 /// mean (50/50) for simplicity — Sims-style: cranky if either hungry OR
 /// tired, fine if both okay.
 private let moodFollowsBodyWeights = (hunger: 0.5, energy: 0.5)
+/// Small positive mood nudge for prompt/fallback/stop events. Body state remains
+/// the dominant mood driver; events only add a light acknowledgement.
+private let moodEventPositiveReward: Double = 0.5
 /// Drift rate (per hour) for mood toward the weighted geometric mean of
-/// hunger/energy/health. Set to 1.0 (τ=1h) so mood reacts quickly to body
-/// state — drops to ~63% of the gap within 1h, ~95% within 3h. Mood is the
+/// hunger/energy/health. Set to 3.0 so mood follows body state quickly —
+/// closes ~78% of the gap within 30min, ~95% within 1h. Mood is the
 /// fast-twitch indicator (the user-visible expression of "how the body is
 /// doing right now"); hunger/energy are the slow-twitch drivers, health is
-/// the long-arc accumulator. Event spikes (prompts +2 / PostStop +3 / fail
-/// -2 / deny -3) ride on top, capped above target by `moodOvershootCap`.
-private let moodEquilibriumRatePerHour: Double = 1.0
+/// the long-arc accumulator. Event nudges (prompt/fallback/PostStop +0.5 /
+/// fail -2 / deny -3) ride on top, capped above target by `moodOvershootCap`.
+private let moodEquilibriumRatePerHour: Double = 3.0
 /// Maximum amount mood is allowed to sit ABOVE the equilibrium target.
-/// Event-driven mood rewards (UserPromptSubmit +2, PostStop +3, success bonus)
+/// Event-driven mood rewards (prompt/fallback/PostStop +0.5)
 /// can spike mood above what the body deserves, but only by this much; any
 /// excess is yanked down to `target + cap` immediately on the next tick. No
 /// lower cap — feeling worse than the body deserves is allowed (bad streak
@@ -165,13 +168,38 @@ private let moodOvershootCap: Double = 8
 /// Health threshold integrator parameters (Sims-style "long-arc accumulator"):
 /// each tick computes body_score = (hunger + energy + mood) / 3 and steers
 /// health based on whether the body is sustaining a deficit or a surplus.
-/// Calibrated so health barely moves under typical mixed days, but a long
-/// burnout grind drains it noticeably and a sustained healthy stretch lifts
-/// it. Sub-hour transients (one bad lunch) don't show up.
-private let bodyScoreLowThreshold:           Double = 30
-private let bodyScoreHighThreshold:          Double = 70
-private let healthDecayPerHourLowBody:       Double = 0.3
-private let healthRecoveryPerHourHighBody:   Double = 0.2
+/// Low hunger and low mood also add small direct pressure so they matter before
+/// the whole-body average collapses into the critical zone.
+enum CharacterHealthBalance {
+    static let bodyScoreLowThreshold: Double = 30
+    static let bodyScoreHighThreshold: Double = 70
+    static let bodyScoreTransitionWidth: Double = 10
+    static let healthDecayPerHourLowBody: Double = 0.3
+    static let healthRecoveryPerHourHighBody: Double = 0.2
+
+    static func bodyScoreHealthDeltaPerHour(_ bodyScore: Double) -> Double {
+        let lowPressure = smoothStep((bodyScoreLowThreshold - bodyScore) / bodyScoreTransitionWidth)
+        let highPressure = smoothStep((bodyScore - bodyScoreHighThreshold) / bodyScoreTransitionWidth)
+        return healthRecoveryPerHourHighBody * highPressure - healthDecayPerHourLowBody * lowPressure
+    }
+
+    private static func smoothStep(_ value: Double) -> Double {
+        let t = min(max(value, 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+}
+private let healthPressureThreshold:         Double = 50
+private let healthHungerPressurePerHourAtZero: Double = 0.3
+private let healthMoodPressurePerHourAtZero:   Double = 0.2
+private let healthRestRecoveryBodyScoreThreshold: Double = 50
+private let healthRestRecoveryPerHour: Double = 0.2
+private let healthStateIntegrationMaxHoursPerTick: Double = 1
+/// Continuous single-turn work starts hurting health after two uninterrupted hours.
+private let continuousWorkHealthPenaltyStartSeconds: Int = 2 * 3600
+private let continuousWorkHealthDecayPerHour: Double = 1.0
+/// Daily overwork: first >8h day already hurts, consecutive overwork ramps up.
+private let overworkDailyPenaltyBase: Double = 3
+private let overworkDailyPenaltyCap: Double = 12
 
 /// Snap-to-target epsilon for mood equilibrium drift. Same rationale as
 /// `idleEnergyRecoveryFullThreshold` — exp drift only ever asymptotes; we
@@ -224,6 +252,7 @@ private struct EngineTransientStateSnapshot {
     let promptLastSampleTimes: [String: Date]
     let promptTurnOrigins: [String: PromptTurnOrigin]
     let sessionMealActiveSeconds: [String: Int]
+    let sessionHealthActiveSeconds: [String: Int]
     let sessionActiveSeconds: [String: Int]
     let sessionLastFocusActiveSeconds: [String: Int]
     let lastToolEventTime: [String: Date]
@@ -255,6 +284,8 @@ public final class CharacterEngine {
     private var promptTurnOrigins: [String: PromptTurnOrigin] = [:]
     /// Per-session explicit prompt active seconds used for meal gates.
     private var sessionMealActiveSeconds: [String: Int] = [:]
+    /// Per-session prompt-turn seconds used for continuous-work health penalties.
+    private var sessionHealthActiveSeconds: [String: Int] = [:]
     /// Per-session seconds credited from tool spacing, used only for focus rewards.
     private var sessionActiveSeconds: [String: Int] = [:]
     /// Per-session tool-spacing marker for the last focus streak reward.
@@ -430,7 +461,7 @@ public final class CharacterEngine {
 
         case "UserPromptSubmit":
             countSessionIfFirst(sessionId: sessionId)
-            applyVitalDelta(.mood, 2)
+            applyVitalDelta(.mood, moodEventPositiveReward)
             characterStats.cyber.collab += 2
             startPromptTurn(sessionId: sessionId, now: now)
 
@@ -543,9 +574,29 @@ public final class CharacterEngine {
         // Order matters: mood follows the JUST-updated hunger/energy values,
         // then health observes the JUST-updated mood (its third input).
         applyMoodFollowsBody(elapsedHours: dt, metadata: &metadata)
-        applyHealthFromBodyScore(elapsedHours: dt, metadata: &metadata)
+        let restEligibleHours = healthRestEligibleHours(
+            elapsedHours: dt,
+            now: now,
+            isAnySessionActive: isAnySessionActive
+        )
+        metadata.derived["healthRestEligibleHours"] = .double(restEligibleHours)
+        applyHealthFromBodyScore(
+            elapsedHours: dt,
+            restEligibleHours: restEligibleHours,
+            metadata: &metadata
+        )
         evaluateDailyRoll(now: now, metadata: &metadata)
         characterStats.lastTickedAt = now
+    }
+
+    private func healthRestEligibleHours(elapsedHours: Double, now: Date, isAnySessionActive: Bool) -> Double {
+        guard elapsedHours > 0, !isAnySessionActive else { return 0 }
+        let lastDay = Calendar.current.startOfDay(for: characterStats.lastTickedAt)
+        let today = Calendar.current.startOfDay(for: now)
+        guard today > lastDay else { return elapsedHours }
+
+        let activeHours = Double(characterStats.stats.currentDayActiveSeconds) / 3600.0
+        return max(0, elapsedHours - activeHours)
     }
 
     private func applyPromptActiveSampleMutation(
@@ -1114,8 +1165,8 @@ public final class CharacterEngine {
         totalTools: Int,
         metadata: inout EventMutationMetadata
     ) {
-        // Mood +3 unconditionally (the small "session-done satisfaction")
-        applyVitalDelta(.mood, 3)
+        // Small session-done satisfaction nudge.
+        applyVitalDelta(.mood, moodEventPositiveReward)
         _ = creditPromptActiveTime(sessionId: sessionId, now: now, force: true)
 
         // Hunger meal — gated by BOTH explicit prompt active time AND tool count. Pure-time gate
@@ -1209,7 +1260,6 @@ public final class CharacterEngine {
         let healthyBandLow = 3600        // 1h
         let healthyBandHigh = 28800      // 8h
         let overworkThreshold = 28800    // 8h
-        let overworkStreakNeeded = 3     // 3 consecutive overwork days
         metadata.derived["rolledDaySeconds"] = .int(Int64(seconds))
 
         if seconds >= healthyBandLow && seconds <= healthyBandHigh {
@@ -1219,10 +1269,12 @@ public final class CharacterEngine {
 
         if seconds > overworkThreshold {
             characterStats.stats.overworkStreakDays += 1
-            if characterStats.stats.overworkStreakDays >= overworkStreakNeeded {
-                applyVitalDelta(.health, -3)
-                metadata.derived["overworkPenaltyApplied"] = .bool(true)
-            }
+            let penalty = min(
+                overworkDailyPenaltyBase * Double(characterStats.stats.overworkStreakDays),
+                overworkDailyPenaltyCap
+            )
+            applyVitalDelta(.health, -penalty)
+            metadata.derived["overworkPenalty"] = .double(penalty)
         } else {
             characterStats.stats.overworkStreakDays = 0
         }
@@ -1253,8 +1305,8 @@ public final class CharacterEngine {
     }
 
     /// Mood follows the body — pulls toward `(hunger + energy) / 2` at
-    /// τ=1h. Fast-twitch indicator: 1h closes ~63% of the gap, 3h ~95%.
-    /// Event rewards (UserPromptSubmit +2, PostStop +3) can push mood above
+    /// Fast-twitch indicator: 30min closes ~78% of the gap, 1h ~95%.
+    /// Event rewards (prompt/fallback/PostStop +0.5) can push mood above
     /// the body target, but only by `moodOvershootCap`; sustained spikes
     /// get yanked back as soon as the body underwrites them.
     private func applyMoodFollowsBody(elapsedHours: Double, metadata: inout EventMutationMetadata) {
@@ -1311,31 +1363,49 @@ public final class CharacterEngine {
         return exp(weightedLogSum) * 100
     }
 
-    /// Health from the body-score threshold integrator. Each tick:
-    ///   body_score = (hunger + energy + mood) / 3
-    ///   body_score < 30 → health -= 0.3 × elapsedHours  (long-arc burnout)
-    ///   body_score > 70 → health += 0.2 × elapsedHours  (long-arc upkeep)
-    ///   30 ≤ score ≤ 70 → no change                     (transient zone)
-    /// Asymmetric: easier to lose than to gain (a bad streak burns the
-    /// reserve faster than a good one rebuilds it). Healthy-day +3 / overwork
-    /// -3 still fire on day boundaries via `evaluateDailyRoll` for clear
-    /// long-period signals; this function is the continuous component.
-    private func applyHealthFromBodyScore(elapsedHours: Double, metadata: inout EventMutationMetadata) {
+    /// Health from body state. Low whole-body score hurts, high score heals
+    /// slowly, rest heals faster, and low hunger/mood add direct pressure.
+    private func applyHealthFromBodyScore(
+        elapsedHours: Double,
+        restEligibleHours: Double,
+        metadata: inout EventMutationMetadata
+    ) {
         guard elapsedHours > 0 else { return }
         let bodyScore = (characterStats.vital.hunger
                        + characterStats.vital.energy
                        + characterStats.vital.mood) / 3.0
         metadata.derived["bodyScore"] = .double(bodyScore)
 
-        let delta: Double
-        if bodyScore < bodyScoreLowThreshold {
-            delta = -healthDecayPerHourLowBody * elapsedHours
-        } else if bodyScore > bodyScoreHighThreshold {
-            delta = healthRecoveryPerHourHighBody * elapsedHours
-        } else {
-            return
+        let stateElapsedHours = min(elapsedHours, healthStateIntegrationMaxHoursPerTick)
+        metadata.derived["healthStateElapsedHours"] = .double(stateElapsedHours)
+
+        var delta: Double = 0
+        let bodyDelta = CharacterHealthBalance.bodyScoreHealthDeltaPerHour(bodyScore) * stateElapsedHours
+        if abs(bodyDelta) > 0.000_000_1 {
+            delta += bodyDelta
+            metadata.derived["healthBodyScoreDelta"] = .double(bodyDelta)
         }
-        metadata.derived["healthBodyScoreDelta"] = .double(delta)
+
+        if restEligibleHours > 0 && bodyScore >= healthRestRecoveryBodyScoreThreshold {
+            let restDelta = healthRestRecoveryPerHour * restEligibleHours
+            delta += restDelta
+            metadata.derived["healthRestRecoveryDelta"] = .double(restDelta)
+        }
+
+        let hungerPressure = max(0, (healthPressureThreshold - characterStats.vital.hunger) / healthPressureThreshold)
+            * healthHungerPressurePerHourAtZero
+            * stateElapsedHours
+        let moodPressure = max(0, (healthPressureThreshold - characterStats.vital.mood) / healthPressureThreshold)
+            * healthMoodPressurePerHourAtZero
+            * stateElapsedHours
+        let pressure = hungerPressure + moodPressure
+        if pressure > 0 {
+            delta -= pressure
+            metadata.derived["healthPressureDelta"] = .double(-pressure)
+        }
+
+        guard abs(delta) > 0.000_000_1 else { return }
+        metadata.derived["healthDelta"] = .double(delta)
         applyVitalDelta(.health, delta)
     }
 
@@ -1344,6 +1414,7 @@ public final class CharacterEngine {
         promptStartTimes[sessionId] = now
         promptLastSampleTimes[sessionId] = now
         promptTurnOrigins[sessionId] = .explicitPrompt
+        sessionHealthActiveSeconds[sessionId] = 0
     }
 
     @discardableResult
@@ -1352,9 +1423,10 @@ public final class CharacterEngine {
         promptStartTimes[sessionId] = now
         promptLastSampleTimes[sessionId] = now
         promptTurnOrigins[sessionId] = .activityFallback
+        sessionHealthActiveSeconds[sessionId] = 0
         // Fallback path: CLI never emitted UserPromptSubmit (Gemini-class). Grant the
-        // same mood/collab bonus once so these users aren't permanently penalised.
-        applyVitalDelta(.mood, 2)
+        // same light mood/collab bonus once so these users aren't permanently penalised.
+        applyVitalDelta(.mood, moodEventPositiveReward)
         characterStats.cyber.collab += 2
         return true
     }
@@ -1386,14 +1458,31 @@ public final class CharacterEngine {
         if promptTurnOrigins[sessionId] == .explicitPrompt {
             sessionMealActiveSeconds[sessionId, default: 0] += seconds
         }
+        applyContinuousWorkHealthPenalty(sessionId: sessionId, addSeconds: seconds)
         promptLastSampleTimes[sessionId] = lastSample.addingTimeInterval(TimeInterval(seconds))
         return true
+    }
+
+    private func applyContinuousWorkHealthPenalty(sessionId: String, addSeconds: Int) {
+        guard addSeconds > 0 else { return }
+        let before = sessionHealthActiveSeconds[sessionId] ?? 0
+        let after = before + addSeconds
+        sessionHealthActiveSeconds[sessionId] = after
+
+        let beforeOver = max(0, before - continuousWorkHealthPenaltyStartSeconds)
+        let afterOver = max(0, after - continuousWorkHealthPenaltyStartSeconds)
+        let penaltySeconds = afterOver - beforeOver
+        guard penaltySeconds > 0 else { return }
+
+        let penalty = Double(penaltySeconds) / 3600.0 * continuousWorkHealthDecayPerHour
+        applyVitalDelta(.health, -penalty)
     }
 
     private func clearPromptTurn(sessionId: String) {
         promptStartTimes.removeValue(forKey: sessionId)
         promptLastSampleTimes.removeValue(forKey: sessionId)
         promptTurnOrigins.removeValue(forKey: sessionId)
+        sessionHealthActiveSeconds.removeValue(forKey: sessionId)
     }
 
     private func countSessionIfFirst(sessionId: String) {
@@ -1407,6 +1496,7 @@ public final class CharacterEngine {
         sessionFocusThresholdFired.removeValue(forKey: sessionId)
         clearPromptTurn(sessionId: sessionId)
         sessionMealActiveSeconds.removeValue(forKey: sessionId)
+        sessionHealthActiveSeconds.removeValue(forKey: sessionId)
         sessionActiveSeconds.removeValue(forKey: sessionId)
         sessionLastFocusActiveSeconds.removeValue(forKey: sessionId)
         lastToolEventTime.removeValue(forKey: sessionId)
@@ -1860,6 +1950,7 @@ public final class CharacterEngine {
             promptLastSampleTimes: promptLastSampleTimes,
             promptTurnOrigins: promptTurnOrigins,
             sessionMealActiveSeconds: sessionMealActiveSeconds,
+            sessionHealthActiveSeconds: sessionHealthActiveSeconds,
             sessionActiveSeconds: sessionActiveSeconds,
             sessionLastFocusActiveSeconds: sessionLastFocusActiveSeconds,
             lastToolEventTime: lastToolEventTime,
@@ -1877,6 +1968,7 @@ public final class CharacterEngine {
         promptLastSampleTimes = snapshot.promptLastSampleTimes
         promptTurnOrigins = snapshot.promptTurnOrigins
         sessionMealActiveSeconds = snapshot.sessionMealActiveSeconds
+        sessionHealthActiveSeconds = snapshot.sessionHealthActiveSeconds
         sessionActiveSeconds = snapshot.sessionActiveSeconds
         sessionLastFocusActiveSeconds = snapshot.sessionLastFocusActiveSeconds
         lastToolEventTime = snapshot.lastToolEventTime
@@ -1893,6 +1985,7 @@ public final class CharacterEngine {
         promptLastSampleTimes.removeAll()
         promptTurnOrigins.removeAll()
         sessionMealActiveSeconds.removeAll()
+        sessionHealthActiveSeconds.removeAll()
         sessionActiveSeconds.removeAll()
         sessionLastFocusActiveSeconds.removeAll()
         lastToolEventTime.removeAll()
