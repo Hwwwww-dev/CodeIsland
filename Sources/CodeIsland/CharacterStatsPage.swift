@@ -360,7 +360,10 @@ struct CharacterStatsPage: View {
 
 /// Show integers when the value has no meaningful fractional part, otherwise show one decimal.
 /// Uses string-suffix trim instead of float equality to avoid `100.0001` slipping through as "100.0".
+/// Within 0.1 of max snap display to "100" — sub-100 dust (e.g. 99.92) reads as "stuck below max"
+/// otherwise. Display-only; state value retains its precision so decay still works.
 fileprivate func formatStatValue(_ value: Double) -> String {
+    if value >= 99.9 { return "100" }
     let s = String(format: "%.1f", value)
     if s.hasSuffix(".0") {
         return String(s.dropLast(2))
