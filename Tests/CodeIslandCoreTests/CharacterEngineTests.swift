@@ -405,13 +405,12 @@ final class CharacterEngineTests: XCTestCase {
 
     @MainActor
     func testEvent_postStop_mealGateScalesAcrossPromptActiveBands() throws {
-        let cases: [(minutes: Int, tools: Int, meal: Double)] = [
-            (1, 2, 1),
-            (2, 3, 2),
-            (5, 5, 4),
-            (10, 10, 6),
-            (20, 20, 9),
-            (30, 30, 12),
+        // Formula: toolCredit = min(toolCount, activeMinutes × 6); meal =
+        // toolCredit × 0.2. Time × 6 is the per-minute throughput cap (anti
+        // burst-spam); for the cases below `tools ≤ minutes × 6` so toolCount
+        // is the binding side and meal = tools × 0.2.
+        let cases: [(minutes: Int, tools: Int)] = [
+            (1, 2), (2, 3), (5, 5), (10, 10), (20, 20), (30, 30),
         ]
 
         for testCase in cases {
@@ -427,22 +426,23 @@ final class CharacterEngineTests: XCTestCase {
                 "session_id": sid,
             ]), sessionContext: nil)
 
+            // Inject the per-turn tool count directly (we're testing the meal
+            // formula, not PostToolUse plumbing — that's covered separately).
+            engine.testInject_sessionPromptToolCount(sessionId: sid, count: testCase.tools)
+
             now = now.addingTimeInterval(TimeInterval(testCase.minutes * 60))
             engine.handle(event: try makeHookEvent([
                 "hook_event_name": "PostStop",
                 "session_id": sid,
-            ]), sessionContext: CharacterSessionContext(totalTools: testCase.tools,
-                                                        hasActiveSession: true))
+            ]), sessionContext: CharacterSessionContext(hasActiveSession: true))
 
-            // hasActiveSession=true keeps the trailing tick on the active path
-            // (under the rebalanced model, idle ticks would route hunger toward
-            // its idle ceiling instead of decaying).
+            let expectedMeal = min(Double(testCase.tools), Double(testCase.minutes) * 6.0) * 0.2
             let decay = Double(testCase.minutes) / 60.0 * 4.0
             // Asymmetric coupling: hunger is a driver, no mood/energy back-propagation.
             // Only paths: PostStop meal +reward, and the elapsed hunger decay.
             // Final: 50 + meal - decay.
             XCTAssertEqual(engine.characterStats.vital.hunger,
-                           50 + testCase.meal - decay,
+                           50 + expectedMeal - decay,
                            accuracy: 0.1,
                            "minutes=\(testCase.minutes), tools=\(testCase.tools)")
         }
@@ -461,17 +461,18 @@ final class CharacterEngineTests: XCTestCase {
             "hook_event_name": "UserPromptSubmit",
             "session_id": sid,
         ]), sessionContext: nil)
+        engine.testInject_sessionPromptToolCount(sessionId: sid, count: 5)
 
         now = now.addingTimeInterval(5 * 60)
         engine.handle(event: try makeHookEvent([
             "hook_event_name": "PostStop",
             "session_id": sid,
-        ]), sessionContext: CharacterSessionContext(totalTools: 5, hasActiveSession: true))
+        ]), sessionContext: CharacterSessionContext(hasActiveSession: true))
 
-        // 5min active + 5 tools → meal band (300s, 5, 4) → reward=4.
-        // hunger is a driver, no back-propagation: 50 + 4 - (5/60×4) = 53.67.
+        // 5min active + 5 tools → toolCredit = min(5, 30) = 5, meal = 5 × 0.2 = 1.0.
+        // hunger is a driver, no back-propagation: 50 + 1 - (5/60×4) = 50.67.
         // hasActiveSession=true keeps the trailing tick on the active path.
-        XCTAssertEqual(engine.characterStats.vital.hunger, 50 + 4.0 - (5.0 / 60.0 * 4.0), accuracy: 0.1)
+        XCTAssertEqual(engine.characterStats.vital.hunger, 50 + 1.0 - (5.0 / 60.0 * 4.0), accuracy: 0.1)
     }
 
     @MainActor
@@ -498,17 +499,103 @@ final class CharacterEngineTests: XCTestCase {
             "session_id": sid,
         ]), sessionContext: activeCtx)
 
+        engine.testInject_sessionPromptToolCount(sessionId: sid, count: 30)
         now = now.addingTimeInterval(60)
         engine.handle(event: try makeHookEvent([
             "hook_event_name": "PostStop",
             "session_id": sid,
-        ]), sessionContext: CharacterSessionContext(totalTools: 30, hasActiveSession: true))
+        ]), sessionContext: CharacterSessionContext(hasActiveSession: true))
 
-        // 60s active prompt window + 30 tools → meal band (60s, 2, 1) → reward=1.
-        // Sims-style hunger model: pure decay (no active recovery), no
-        // coupling propagation. 50 - 8 (2h decay) + 1 (meal) - 0.067 (60s
-        // post-meal decay) ≈ 42.93.
-        XCTAssertEqual(engine.characterStats.vital.hunger, 42.93, accuracy: 0.1)
+        // 60s active prompt window + 30 tools → toolCredit = min(30, 6) = 6,
+        // meal = 6 × 0.2 = 1.2. Time-side clamps the burst: 30 tools in
+        // 1 minute only cash 6 tool-credits. 50 - 8 (2h decay) + 1.2 (meal)
+        // - 0.067 (60s post-meal decay) ≈ 43.13.
+        XCTAssertEqual(engine.characterStats.vital.hunger, 43.13, accuracy: 0.1)
+    }
+
+    @MainActor
+    func testEvent_postStop_subagentToolUseCountsTowardMeal() throws {
+        // Regression: subagent PostToolUse events arrive with the parent's
+        // session_id (CC) and an `agent_id` discriminator. They MUST grow the
+        // engine's per-turn tool counter so heavy subagent workloads can hit
+        // the meal formula. Previously meal was gated by
+        // `SessionSnapshot.toolHistory.count` (a UI ring buffer capped at 20),
+        // which silently swallowed everything past the cap.
+        var stats = CharacterStats()
+        var now = Date(timeIntervalSince1970: 1_700_000_000)
+        stats.lastTickedAt = now
+        stats.vital.hunger = 50
+        let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
+        let sid = "subagent-meal"
+        let agentId = "agent-1"
+
+        engine.handle(event: try makeHookEvent([
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": sid,
+        ]), sessionContext: nil)
+
+        engine.handle(event: try makeHookEvent([
+            "hook_event_name": "SubagentStart",
+            "session_id": sid,
+            "agent_id": agentId,
+        ]), sessionContext: nil)
+
+        // Fire 30 subagent PostToolUse events — each carries the parent
+        // session_id and the agent_id, mirroring CC's wire format.
+        for _ in 0..<30 {
+            engine.handle(event: try makeHookEvent([
+                "hook_event_name": "PostToolUse",
+                "session_id": sid,
+                "agent_id": agentId,
+                "tool_name": "Read",
+                "success": true,
+            ]), sessionContext: nil)
+        }
+
+        now = now.addingTimeInterval(30 * 60)
+        engine.handle(event: try makeHookEvent([
+            "hook_event_name": "SubagentStop",
+            "session_id": sid,
+            "agent_id": agentId,
+        ]), sessionContext: nil)
+
+        engine.handle(event: try makeHookEvent([
+            "hook_event_name": "PostStop",
+            "session_id": sid,
+        ]), sessionContext: CharacterSessionContext(hasActiveSession: true))
+
+        // 30min active + 30 successful subagent tools → toolCredit =
+        // min(30, 180) = 30, meal = 30 × 0.2 = 6. Decay over 30min = 2.
+        // Final: 50 + 6 - 2 = 54.
+        XCTAssertEqual(engine.characterStats.vital.hunger, 54.0, accuracy: 0.5)
+    }
+
+    @MainActor
+    func testEvent_postStop_idleThinkingClampsMealToZero() throws {
+        // Long active prompt with no successful tool calls: meal = 0 because
+        // the tool channel is the smaller side of min(time, tools).
+        var stats = CharacterStats()
+        var now = Date(timeIntervalSince1970: 1_700_000_000)
+        stats.lastTickedAt = now
+        stats.vital.hunger = 50
+        let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
+        let sid = "idle-thinking"
+
+        engine.handle(event: try makeHookEvent([
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": sid,
+        ]), sessionContext: nil)
+
+        // 30min of "thinking" — no tool count grows.
+        now = now.addingTimeInterval(30 * 60)
+        engine.handle(event: try makeHookEvent([
+            "hook_event_name": "PostStop",
+            "session_id": sid,
+        ]), sessionContext: CharacterSessionContext(hasActiveSession: true))
+
+        // toolCount=0 → toolCredit = min(0, 180) = 0 → meal = 0.
+        // Pure decay over 30min = 2. Final: 50 - 2 = 48.
+        XCTAssertEqual(engine.characterStats.vital.hunger, 48.0, accuracy: 0.1)
     }
 
     func testEvent_postToolFailure_moodBumped() {
@@ -1398,8 +1485,9 @@ final class CharacterEngineTests: XCTestCase {
         let engine = CharacterEngine.makeForTesting()
         engine.handle(event: try makeHookEvent(["hook_event_name": "UserPromptSubmit", "session_id": "s1"]),
                       sessionContext: nil)
+        engine.testInject_sessionPromptToolCount(sessionId: "s1", count: 5)
         engine.handle(event: try makeHookEvent(["hook_event_name": "PostStop", "session_id": "s1"]),
-                      sessionContext: CharacterSessionContext(toolSuccessRate: 0.90, totalTools: 5))
+                      sessionContext: CharacterSessionContext(toolSuccessRate: 0.90))
         XCTAssertEqual(engine.characterStats.cyber.taste, 5, accuracy: 0.01)
     }
 
@@ -1408,8 +1496,9 @@ final class CharacterEngineTests: XCTestCase {
         let engine = CharacterEngine.makeForTesting()
         engine.handle(event: try makeHookEvent(["hook_event_name": "UserPromptSubmit", "session_id": "s1"]),
                       sessionContext: nil)
+        engine.testInject_sessionPromptToolCount(sessionId: "s1", count: 5)
         engine.handle(event: try makeHookEvent(["hook_event_name": "PostStop", "session_id": "s1"]),
-                      sessionContext: CharacterSessionContext(toolSuccessRate: 1.0, totalTools: 5))
+                      sessionContext: CharacterSessionContext(toolSuccessRate: 1.0))
         XCTAssertEqual(engine.characterStats.cyber.taste, 10, accuracy: 0.01)
     }
 
@@ -1418,8 +1507,9 @@ final class CharacterEngineTests: XCTestCase {
         let engine = CharacterEngine.makeForTesting()
         engine.handle(event: try makeHookEvent(["hook_event_name": "UserPromptSubmit", "session_id": "s1"]),
                       sessionContext: nil)
+        engine.testInject_sessionPromptToolCount(sessionId: "s1", count: 5)
         engine.handle(event: try makeHookEvent(["hook_event_name": "PostStop", "session_id": "s1"]),
-                      sessionContext: CharacterSessionContext(toolSuccessRate: 0.85, totalTools: 5))
+                      sessionContext: CharacterSessionContext(toolSuccessRate: 0.85))
         XCTAssertEqual(engine.characterStats.cyber.taste, 0)
     }
 
@@ -1770,17 +1860,17 @@ final class CharacterEngineTests: XCTestCase {
         let prompt = try makeHookEvent(["hook_event_name": "UserPromptSubmit", "session_id": "s1"])
         engine.handle(event: prompt, sessionContext: nil)
         engine.testInject_sessionMealSeconds(sessionId: "s1", seconds: 130)
+        engine.testInject_sessionPromptToolCount(sessionId: "s1", count: 3)
         let stop = try makeHookEvent(["hook_event_name": "PostStop", "session_id": "s1"])
-        engine.handle(event: stop, sessionContext: CharacterSessionContext(totalTools: 3))
-        // Meal band (2 min=120s, 3 tools) → reward 2.
-        // Asymmetric coupling: mood/health are indicators only (no out-edges), so neither
-        // UserPromptSubmit's nor PostStop's mood nudge propagates back to hunger/energy.
-        // hunger and energy are drivers (no in-edges), so they only receive their direct
-        // meal +2. The 60s idle-recovery cooldown also suppresses energy bleed-up between
-        // ticks since the test runs in tight succession.
-        // Final: hunger = 40 + 2 = 42; energy = 40 + 2 = 42.
-        XCTAssertEqual(engine.characterStats.vital.hunger, 42.0, accuracy: 0.5)
-        XCTAssertEqual(engine.characterStats.vital.energy, 42.0, accuracy: 0.5)
+        engine.handle(event: stop, sessionContext: nil)
+        // 130s active = 2.17 min, 3 tools → toolCredit = min(3, 13) = 3,
+        // meal = 3 × 0.2 = 0.6. Hunger and energy are drivers — they receive
+        // only the direct meal delta. The 60s idle-recovery cooldown
+        // suppresses energy bleed-up between ticks since the test runs in
+        // tight succession.
+        // Final: hunger ≈ 40 + 0.6 = 40.60; energy ≈ 40 + 0.6 = 40.60.
+        XCTAssertEqual(engine.characterStats.vital.hunger, 40.60, accuracy: 0.1)
+        XCTAssertEqual(engine.characterStats.vital.energy, 40.60, accuracy: 0.1)
     }
 
     // MARK: - Task 5: Fallback prompt-turn earns mood + collab once

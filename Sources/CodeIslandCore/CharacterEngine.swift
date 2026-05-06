@@ -88,18 +88,19 @@ private let activeRecoveryDamping: Double = 0.1
 private let lazyTickMinInterval: TimeInterval = 1.0
 /// Active prompt sampling interval. Keeps active time from depending on Stop delivery.
 private let activePromptSampleInterval: TimeInterval = 5.0
-/// Meal reward bands, ordered from largest to smallest so the first match wins.
-/// Calibrated against hungerDecayPerHour=4: a typical 8h workday (mix of long
-/// focused turns and short interactions) refills the gauge to full, short
-/// interactions top up generously, and pure idle/slacking still drifts hungry.
-private let mealRewardBands: [(seconds: Int, tools: Int, reward: Double)] = [
-    (30 * 60, 30, 12),
-    (20 * 60, 20, 9),
-    (10 * 60, 10, 6),
-    (5 * 60, 5, 4),
-    (2 * 60, 3, 2),
-    (1 * 60, 2, 1),
-]
+/// Meal formula: tools converted to hunger, with a per-minute throughput cap
+/// that lets time gate tools (anti-spam against parallel-subagent bursts):
+///     toolCredit = min(toolCount, activeMinutes × toolCreditPerMinute)
+///     meal       = toolCredit × mealPerTool
+/// `toolCreditPerMinute` (= 6) caps how many tools a single minute of real
+/// wall-clock can "cash in" — a subagent fan-out spitting 200 tools in 5
+/// minutes only counts as 30, while sustained 1h work with steady tool use
+/// can cash 360 tools. `mealPerTool` (= 0.2) calibrates against
+/// hungerDecayPerHour=4: 1h sustained work → +12 hunger (net +8), 4h →
+/// +48 (net +32), 8h → saturates to 100. Idle thinking (no tools) still
+/// produces zero meal because the tool side is the floor of min().
+private let mealPerTool: Double = 0.2
+private let toolCreditPerMinute: Double = 6.0
 
 /// Vital-coupling weights: when source vital changes by ΔX, each target
 /// vital receives ΔX × weight in the same direction.
@@ -252,6 +253,7 @@ private struct EngineTransientStateSnapshot {
     let promptLastSampleTimes: [String: Date]
     let promptTurnOrigins: [String: PromptTurnOrigin]
     let sessionMealActiveSeconds: [String: Int]
+    let sessionPromptToolCount: [String: Int]
     let sessionHealthActiveSeconds: [String: Int]
     let sessionActiveSeconds: [String: Int]
     let sessionLastFocusActiveSeconds: [String: Int]
@@ -284,6 +286,12 @@ public final class CharacterEngine {
     private var promptTurnOrigins: [String: PromptTurnOrigin] = [:]
     /// Per-session explicit prompt active seconds used for meal gates.
     private var sessionMealActiveSeconds: [String: Int] = [:]
+    /// Per-session count of successful tool calls during the current prompt turn.
+    /// Engine-owned (decoupled from `SessionSnapshot.toolHistory` which is a
+    /// UI ring buffer capped at `maxToolHistory=20` — using that for meal would
+    /// silently swallow heavy subagent workloads since their PostToolUse events
+    /// would push older tools out without growing the count).
+    private var sessionPromptToolCount: [String: Int] = [:]
     /// Per-session prompt-turn seconds used for continuous-work health penalties.
     private var sessionHealthActiveSeconds: [String: Int] = [:]
     /// Per-session seconds credited from tool spacing, used only for focus rewards.
@@ -895,6 +903,10 @@ public final class CharacterEngine {
         sessionMealActiveSeconds[sessionId] = seconds
     }
 
+    internal func testInject_sessionPromptToolCount(sessionId: String, count: Int) {
+        sessionPromptToolCount[sessionId] = count
+    }
+
     internal func testInject_sessionFocusActiveSeconds(sessionId: String, seconds: Int) {
         sessionActiveSeconds[sessionId] = seconds
     }
@@ -1139,6 +1151,14 @@ public final class CharacterEngine {
             // (`energyDecayPerHourActive`) handles the steady drain.
             applyVitalDelta(.energy, -energyCostPerToolSuccess)
 
+            // Per-prompt-turn tool count for the meal formula at PostStop.
+            // Gated on an active prompt turn so orphaned PostToolUse events
+            // (CLI emits tool events without lifecycle hooks) don't inflate
+            // the next turn's meal.
+            if promptTurnOrigins[sessionId] != nil {
+                sessionPromptToolCount[sessionId, default: 0] += 1
+            }
+
             // Cyber attribution — exactly one dimension per successful event, by semantic.
             switch semantic {
             case .write:
@@ -1169,15 +1189,19 @@ public final class CharacterEngine {
         applyVitalDelta(.mood, moodEventPositiveReward)
         _ = creditPromptActiveTime(sessionId: sessionId, now: now, force: true)
 
-        // Hunger meal — gated by BOTH explicit prompt active time AND tool count. Pure-time gate
-        // would let "open session, sit idle, close" loop refill hunger for free.
-        // Read active seconds BEFORE cleanup at the bottom of this method.
+        // Hunger meal — tools cashed in, with a per-minute throughput cap so
+        // burst tool floods can't outrun real wall-clock. toolCount comes from
+        // the engine's own per-turn counter (NOT SessionSnapshot.toolHistory,
+        // which is a UI ring buffer capped at maxToolHistory=20 — that would
+        // silently swallow heavy subagent workloads). Read state BEFORE
+        // clearSessionTracking() below.
         let activeSeconds = sessionMealActiveSeconds[sessionId] ?? 0
-        let meal = mealRewardBands.first {
-            activeSeconds >= $0.seconds && totalTools >= $0.tools
-        }?.reward ?? 0
+        let toolCount = sessionPromptToolCount[sessionId] ?? 0
+        let activeMinutes = Double(activeSeconds) / 60.0
+        let toolCredit = min(Double(toolCount), activeMinutes * toolCreditPerMinute)
+        let meal = toolCredit * mealPerTool
         metadata.derived["activeSeconds"] = .int(Int64(activeSeconds))
-        metadata.derived["totalTools"] = .int(Int64(totalTools))
+        metadata.derived["promptToolCount"] = .int(Int64(toolCount))
         metadata.derived["mealReward"] = .double(meal)
         if meal > 0 {
             applyVitalDelta(.hunger, meal)
@@ -1187,7 +1211,7 @@ public final class CharacterEngine {
         }
 
         // Taste: linear from 90%→+5 to 100%→+10 (requires ≥5 tools).
-        if toolSuccessRate >= 0.90 && totalTools >= 5 {
+        if toolSuccessRate >= 0.90 && toolCount >= 5 {
             let scaled = 5.0 + (toolSuccessRate - 0.90) * 50.0  // 0.90 → 5, 1.00 → 10
             characterStats.cyber.taste += scaled
             metadata.derived["tasteReward"] = .double(scaled)
@@ -1415,6 +1439,7 @@ public final class CharacterEngine {
         promptLastSampleTimes[sessionId] = now
         promptTurnOrigins[sessionId] = .explicitPrompt
         sessionHealthActiveSeconds[sessionId] = 0
+        sessionPromptToolCount[sessionId] = 0
     }
 
     @discardableResult
@@ -1424,6 +1449,7 @@ public final class CharacterEngine {
         promptLastSampleTimes[sessionId] = now
         promptTurnOrigins[sessionId] = .activityFallback
         sessionHealthActiveSeconds[sessionId] = 0
+        sessionPromptToolCount[sessionId] = 0
         // Fallback path: CLI never emitted UserPromptSubmit (Gemini-class). Grant the
         // same light mood/collab bonus once so these users aren't permanently penalised.
         applyVitalDelta(.mood, moodEventPositiveReward)
@@ -1496,6 +1522,7 @@ public final class CharacterEngine {
         sessionFocusThresholdFired.removeValue(forKey: sessionId)
         clearPromptTurn(sessionId: sessionId)
         sessionMealActiveSeconds.removeValue(forKey: sessionId)
+        sessionPromptToolCount.removeValue(forKey: sessionId)
         sessionHealthActiveSeconds.removeValue(forKey: sessionId)
         sessionActiveSeconds.removeValue(forKey: sessionId)
         sessionLastFocusActiveSeconds.removeValue(forKey: sessionId)
@@ -1950,6 +1977,7 @@ public final class CharacterEngine {
             promptLastSampleTimes: promptLastSampleTimes,
             promptTurnOrigins: promptTurnOrigins,
             sessionMealActiveSeconds: sessionMealActiveSeconds,
+            sessionPromptToolCount: sessionPromptToolCount,
             sessionHealthActiveSeconds: sessionHealthActiveSeconds,
             sessionActiveSeconds: sessionActiveSeconds,
             sessionLastFocusActiveSeconds: sessionLastFocusActiveSeconds,
@@ -1968,6 +1996,7 @@ public final class CharacterEngine {
         promptLastSampleTimes = snapshot.promptLastSampleTimes
         promptTurnOrigins = snapshot.promptTurnOrigins
         sessionMealActiveSeconds = snapshot.sessionMealActiveSeconds
+        sessionPromptToolCount = snapshot.sessionPromptToolCount
         sessionHealthActiveSeconds = snapshot.sessionHealthActiveSeconds
         sessionActiveSeconds = snapshot.sessionActiveSeconds
         sessionLastFocusActiveSeconds = snapshot.sessionLastFocusActiveSeconds
@@ -1985,6 +2014,7 @@ public final class CharacterEngine {
         promptLastSampleTimes.removeAll()
         promptTurnOrigins.removeAll()
         sessionMealActiveSeconds.removeAll()
+        sessionPromptToolCount.removeAll()
         sessionHealthActiveSeconds.removeAll()
         sessionActiveSeconds.removeAll()
         sessionLastFocusActiveSeconds.removeAll()
