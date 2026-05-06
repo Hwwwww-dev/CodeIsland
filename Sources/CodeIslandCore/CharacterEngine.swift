@@ -1481,9 +1481,16 @@ public final class CharacterEngine {
         guard seconds > 0 else { return false }
 
         updateDailyActiveSeconds(now: now, addSeconds: seconds)
-        if promptTurnOrigins[sessionId] == .explicitPrompt {
-            sessionMealActiveSeconds[sessionId, default: 0] += seconds
-        }
+        // Both explicit and fallback turns count toward meal active time. The
+        // outer guard already confirms a prompt turn is alive, and the new
+        // meal formula `min(toolCount, activeMinutes × 6) × 0.2` floors on
+        // tool count — pure-idle sessions (no PostToolUse) can never cash in
+        // time, so the previous explicit-only restriction is no longer needed
+        // to defeat "open and sit idle" abuse. Without this, fallback-origin
+        // turns (CC sessions whose UserPromptSubmit got dropped or skipped,
+        // and Gemini-class CLIs) accrue tools but zero active seconds and
+        // produce meal=0 forever.
+        sessionMealActiveSeconds[sessionId, default: 0] += seconds
         applyContinuousWorkHealthPenalty(sessionId: sessionId, addSeconds: seconds)
         promptLastSampleTimes[sessionId] = lastSample.addingTimeInterval(TimeInterval(seconds))
         return true
