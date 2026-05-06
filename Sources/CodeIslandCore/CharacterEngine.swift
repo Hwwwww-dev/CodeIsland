@@ -92,15 +92,16 @@ private let activePromptSampleInterval: TimeInterval = 5.0
 /// that lets time gate tools (anti-spam against parallel-subagent bursts):
 ///     toolCredit = min(toolCount, activeMinutes × toolCreditPerMinute)
 ///     meal       = toolCredit × mealPerTool
-/// `toolCreditPerMinute` (= 6) caps how many tools a single minute of real
-/// wall-clock can "cash in" — a subagent fan-out spitting 200 tools in 5
-/// minutes only counts as 30, while sustained 1h work with steady tool use
-/// can cash 360 tools. `mealPerTool` (= 0.2) calibrates against
+/// `toolCreditPerMinute` (= 10) caps how many tools a single minute of real
+/// wall-clock can "cash in" — calibrated against measured subagent throughput
+/// (~8 tools/min from real fan-outs); 10 leaves headroom so legitimate
+/// subagent work isn't penalised but truly absurd bursts (200 tools in
+/// 30s) still get clamped. `mealPerTool` (= 0.2) calibrates against
 /// hungerDecayPerHour=4: 1h sustained work → +12 hunger (net +8), 4h →
 /// +48 (net +32), 8h → saturates to 100. Idle thinking (no tools) still
 /// produces zero meal because the tool side is the floor of min().
 private let mealPerTool: Double = 0.2
-private let toolCreditPerMinute: Double = 6.0
+private let toolCreditPerMinute: Double = 10.0
 
 /// Vital-coupling weights: when source vital changes by ΔX, each target
 /// vital receives ΔX × weight in the same direction.

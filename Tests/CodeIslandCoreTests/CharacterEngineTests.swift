@@ -405,9 +405,9 @@ final class CharacterEngineTests: XCTestCase {
 
     @MainActor
     func testEvent_postStop_mealGateScalesAcrossPromptActiveBands() throws {
-        // Formula: toolCredit = min(toolCount, activeMinutes × 6); meal =
-        // toolCredit × 0.2. Time × 6 is the per-minute throughput cap (anti
-        // burst-spam); for the cases below `tools ≤ minutes × 6` so toolCount
+        // Formula: toolCredit = min(toolCount, activeMinutes × 10); meal =
+        // toolCredit × 0.2. Time × 10 is the per-minute throughput cap (anti
+        // burst-spam); for the cases below `tools ≤ minutes × 10` so toolCount
         // is the binding side and meal = tools × 0.2.
         let cases: [(minutes: Int, tools: Int)] = [
             (1, 2), (2, 3), (5, 5), (10, 10), (20, 20), (30, 30),
@@ -436,7 +436,7 @@ final class CharacterEngineTests: XCTestCase {
                 "session_id": sid,
             ]), sessionContext: CharacterSessionContext(hasActiveSession: true))
 
-            let expectedMeal = min(Double(testCase.tools), Double(testCase.minutes) * 6.0) * 0.2
+            let expectedMeal = min(Double(testCase.tools), Double(testCase.minutes) * 10.0) * 0.2
             let decay = Double(testCase.minutes) / 60.0 * 4.0
             // Asymmetric coupling: hunger is a driver, no mood/energy back-propagation.
             // Only paths: PostStop meal +reward, and the elapsed hunger decay.
@@ -506,11 +506,11 @@ final class CharacterEngineTests: XCTestCase {
             "session_id": sid,
         ]), sessionContext: CharacterSessionContext(hasActiveSession: true))
 
-        // 60s active prompt window + 30 tools → toolCredit = min(30, 6) = 6,
-        // meal = 6 × 0.2 = 1.2. Time-side clamps the burst: 30 tools in
-        // 1 minute only cash 6 tool-credits. 50 - 8 (2h decay) + 1.2 (meal)
-        // - 0.067 (60s post-meal decay) ≈ 43.13.
-        XCTAssertEqual(engine.characterStats.vital.hunger, 43.13, accuracy: 0.1)
+        // 60s active prompt window + 30 tools → toolCredit = min(30, 10) = 10,
+        // meal = 10 × 0.2 = 2.0. Time-side still clamps the burst: 30 tools in
+        // 1 minute only cash 10 tool-credits. 50 - 8 (2h decay) + 2.0 (meal)
+        // - 0.067 (60s post-meal decay) ≈ 43.93.
+        XCTAssertEqual(engine.characterStats.vital.hunger, 43.93, accuracy: 0.1)
     }
 
     @MainActor
