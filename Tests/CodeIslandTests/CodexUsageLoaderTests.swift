@@ -27,7 +27,7 @@ final class CodexUsageLoaderTests: XCTestCase {
         XCTAssertEqual(snapshot.windows.first?.usedPercentage, 11)
     }
 
-    func testLoadReadsOnlyNewestRolloutFileContent() throws {
+    func testLoadFallsBackWhenNewestRolloutHasNoTokenCount() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-usage-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -44,9 +44,35 @@ final class CodexUsageLoaderTests: XCTestCase {
         try setModifiedAt(Date().addingTimeInterval(-120), for: older)
         try setModifiedAt(Date(), for: newer)
 
-        let snapshot = try CodexUsageLoader.load(fromRootURL: tempDir)
+        let snapshot = try XCTUnwrap(CodexUsageLoader.load(fromRootURL: tempDir))
 
-        XCTAssertNil(snapshot)
+        XCTAssertEqual(canonicalPath(snapshot.sourceFilePath), canonicalPath(older.path))
+        XCTAssertEqual(snapshot.windows.first?.usedPercentage, 42)
+    }
+
+    func testLoadFallsBackToOlderDateWhenRecentDateHasNoTokenCount() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-usage-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let todayDir = dateDirectory(for: Date(), under: tempDir)
+        let yesterdayDir = dateDirectory(for: dateByAddingDays(-1), under: tempDir)
+        try FileManager.default.createDirectory(at: todayDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: yesterdayDir, withIntermediateDirectories: true)
+
+        let today = todayDir.appendingPathComponent("rollout-today.jsonl")
+        let yesterday = yesterdayDir.appendingPathComponent("rollout-yesterday.jsonl")
+        try #"{"type":"event_msg","payload":{"type":"session_configured"}}"#
+            .write(to: today, atomically: true, encoding: .utf8)
+        try validTokenCountLine(usedPercent: 66).write(to: yesterday, atomically: true, encoding: .utf8)
+
+        try setModifiedAt(Date(), for: today)
+        try setModifiedAt(Date().addingTimeInterval(-120), for: yesterday)
+
+        let snapshot = try XCTUnwrap(CodexUsageLoader.load(fromRootURL: tempDir))
+
+        XCTAssertEqual(canonicalPath(snapshot.sourceFilePath), canonicalPath(yesterday.path))
+        XCTAssertEqual(snapshot.windows.first?.usedPercentage, 66)
     }
 
     private func validTokenCountLine(usedPercent: Int) -> String {

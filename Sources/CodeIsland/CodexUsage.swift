@@ -86,6 +86,7 @@ enum CodexUsageLoader {
     /// Files older than this are skipped — token_count events beyond a week are stale
     /// and not worth the stat/parse budget on every hover-triggered refresh.
     private static let candidateMaxAge: TimeInterval = 7 * 24 * 3600
+    private static let tailReadByteLimit = 512 * 1024
 
     private struct Candidate {
         var fileURL: URL
@@ -102,10 +103,11 @@ enum CodexUsageLoader {
         let cutoff = now.addingTimeInterval(-Self.candidateMaxAge)
 
         for dayURL in recentDateDirectoryURLs(rootURL: rootURL, now: now) {
-            guard let candidate = newestCandidate(in: dayURL, cutoff: cutoff, fileManager: fileManager) else {
-                continue
+            for candidate in candidates(in: dayURL, cutoff: cutoff, fileManager: fileManager) {
+                if let snapshot = loadLatestSnapshot(from: candidate.fileURL, modifiedAt: candidate.modifiedAt) {
+                    return snapshot
+                }
             }
-            return loadLatestSnapshot(from: candidate.fileURL, modifiedAt: candidate.modifiedAt)
         }
 
         return nil
@@ -135,18 +137,18 @@ enum CodexUsageLoader {
         return lhs.modifiedAt > rhs.modifiedAt
     }
 
-    private static func newestCandidate(
+    private static func candidates(
         in dayURL: URL,
         cutoff: Date,
         fileManager: FileManager
-    ) -> Candidate? {
+    ) -> [Candidate] {
         guard let fileURLs = try? fileManager.contentsOfDirectory(
             at: dayURL,
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
             options: [.skipsHiddenFiles]
-        ) else { return nil }
+        ) else { return [] }
 
-        var latestCandidate: Candidate?
+        var candidates: [Candidate] = []
         for fileURL in fileURLs {
             guard fileURL.lastPathComponent.hasPrefix("rollout-"),
                   fileURL.pathExtension == "jsonl",
@@ -157,25 +159,63 @@ enum CodexUsageLoader {
                   let modifiedAt = resourceValues.contentModificationDate,
                   modifiedAt >= cutoff else { continue }
 
-            let candidate = Candidate(fileURL: fileURL, modifiedAt: modifiedAt)
-            if latestCandidate.map({ isNewer(candidate, than: $0) }) ?? true {
-                latestCandidate = candidate
-            }
+            candidates.append(Candidate(fileURL: fileURL, modifiedAt: modifiedAt))
         }
 
-        return latestCandidate
+        return candidates.sorted { isNewer($0, than: $1) }
     }
 
     private static func loadLatestSnapshot(from fileURL: URL, modifiedAt: Date) -> CodexUsageSnapshot? {
-        guard let contents = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
-        var latestSnapshot: CodexUsageSnapshot?
-        contents.enumerateLines { line, _ in
-            guard let snapshot = snapshot(from: line, filePath: fileURL.path, fallbackTimestamp: modifiedAt) else {
-                return
-            }
-            latestSnapshot = snapshot
+        let tail = tailContents(of: fileURL)
+        if let snapshot = tail.flatMap({
+            latestSnapshot(in: $0.text, filePath: fileURL.path, fallbackTimestamp: modifiedAt)
+        }) {
+            return snapshot
         }
-        return latestSnapshot
+
+        guard tail?.isCompleteFile != true,
+              let contents = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
+        return latestSnapshot(in: contents, filePath: fileURL.path, fallbackTimestamp: modifiedAt)
+    }
+
+    private struct TailContents {
+        var text: String
+        var isCompleteFile: Bool
+    }
+
+    private static func tailContents(of fileURL: URL) -> TailContents? {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return nil }
+        defer { try? handle.close() }
+
+        guard let fileSize = try? handle.seekToEnd() else { return nil }
+        let readSize = Int(min(fileSize, UInt64(Self.tailReadByteLimit)))
+        let startOffset = fileSize - UInt64(readSize)
+
+        do {
+            try handle.seek(toOffset: startOffset)
+            guard let data = try handle.read(upToCount: readSize) else { return nil }
+            let text = String(decoding: data, as: UTF8.self)
+            return TailContents(text: text, isCompleteFile: startOffset == 0)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func latestSnapshot(
+        in contents: String,
+        filePath: String,
+        fallbackTimestamp: Date
+    ) -> CodexUsageSnapshot? {
+        for line in contents.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+            if let snapshot = snapshot(
+                from: String(line),
+                filePath: filePath,
+                fallbackTimestamp: fallbackTimestamp
+            ) {
+                return snapshot
+            }
+        }
+        return nil
     }
 
     private static func snapshot(from line: String, filePath: String, fallbackTimestamp: Date) -> CodexUsageSnapshot? {
