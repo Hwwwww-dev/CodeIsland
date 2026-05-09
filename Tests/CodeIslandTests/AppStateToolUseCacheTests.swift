@@ -98,10 +98,96 @@ final class AppStateToolUseCacheTests: XCTestCase {
         XCTAssertEqual(try behavior(secondResponse), "allow")
     }
 
-    // MARK: - Stale queue drain via PostToolUse
+    // MARK: - Permission races via PostToolUse
 
-    func testPostToolUseDrainsQueuedPermissionForSameId() async throws {
+    func testPostToolUseForPendingPermissionDoesNotAutoDeny() async throws {
         let appState = AppState()
+        let pending = try makePermissionEvent(sessionId: "s1", toolName: "Bash", toolUseId: "toolu_pending")
+
+        let responseTask = Task<Data, Never> {
+            await withCheckedContinuation { cont in
+                appState.handlePermissionRequest(pending, continuation: cont)
+            }
+        }
+        await Task.yield()
+        XCTAssertEqual(appState.permissionQueue.count, 1)
+
+        appState.handleEvent(try makeHookEvent(
+            name: "PostToolUse",
+            sessionId: "s1",
+            toolName: "Bash",
+            toolUseId: "toolu_pending"
+        ))
+
+        XCTAssertEqual(appState.permissionQueue.count, 1)
+        await assertTaskNotResolved(responseTask)
+
+        appState.approvePermission()
+        let response = await responseTask.value
+        XCTAssertEqual(try behavior(response), "allow")
+    }
+
+    func testStopDuringPendingPermissionDoesNotAutoDeny() async throws {
+        let appState = AppState()
+        let pending = try makePermissionEvent(sessionId: "s1", toolName: "Bash", toolUseId: "toolu_stop")
+
+        let responseTask = Task<Data, Never> {
+            await withCheckedContinuation { cont in
+                appState.handlePermissionRequest(pending, continuation: cont)
+            }
+        }
+        await Task.yield()
+        XCTAssertEqual(appState.permissionQueue.count, 1)
+
+        appState.handleEvent(try makeHookEvent(
+            name: "Stop",
+            sessionId: "s1",
+            toolName: nil,
+            toolUseId: nil
+        ))
+
+        XCTAssertEqual(appState.permissionQueue.count, 1)
+        await assertTaskNotResolved(responseTask)
+
+        appState.approvePermission()
+        let response = await responseTask.value
+        XCTAssertEqual(try behavior(response), "allow")
+    }
+
+    func testPermissionDeniedDuringPendingPermissionReturnsDeny() async throws {
+        let appState = AppState()
+        let pending = try makePermissionEvent(sessionId: "s1", toolName: "Bash", toolUseId: "toolu_denied")
+
+        let responseTask = Task<Data, Never> {
+            await withCheckedContinuation { cont in
+                appState.handlePermissionRequest(pending, continuation: cont)
+            }
+        }
+        await Task.yield()
+        XCTAssertEqual(appState.permissionQueue.count, 1)
+
+        appState.handleEvent(try makeHookEvent(
+            name: "PermissionDenied",
+            sessionId: "s1",
+            toolName: "Bash",
+            toolUseId: "toolu_denied"
+        ))
+
+        let response = await responseTask.value
+        XCTAssertEqual(try behavior(response), "deny")
+        XCTAssertEqual(appState.permissionQueue.count, 0)
+    }
+
+    func testPostToolUseClearsCacheButKeepsQueuedPermissionForSameId() async throws {
+        let appState = AppState()
+        appState.handleEvent(try makeHookEvent(
+            name: "PreToolUse",
+            sessionId: "s1",
+            toolName: "Bash",
+            toolUseId: "toolu_drain"
+        ))
+        XCTAssertNotNil(appState.pendingToolUses["toolu_drain"])
+
         let pending = try makePermissionEvent(sessionId: "s1", toolName: "Bash", toolUseId: "toolu_drain")
 
         let responseTask = Task<Data, Never> {
@@ -112,7 +198,7 @@ final class AppStateToolUseCacheTests: XCTestCase {
         await Task.yield()
         XCTAssertEqual(appState.permissionQueue.count, 1)
 
-        // Agent moved on — emits PostToolUse for the same tool_use_id.
+        // Agent may emit a late PostToolUse while the approval card is visible.
         appState.handleEvent(try makeHookEvent(
             name: "PostToolUse",
             sessionId: "s1",
@@ -120,12 +206,17 @@ final class AppStateToolUseCacheTests: XCTestCase {
             toolUseId: "toolu_drain"
         ))
 
+        XCTAssertNil(appState.pendingToolUses["toolu_drain"])
+        XCTAssertEqual(appState.permissionQueue.count, 1)
+        await assertTaskNotResolved(responseTask)
+
+        appState.approvePermission()
         let response = await responseTask.value
-        XCTAssertEqual(try behavior(response), "deny")
+        XCTAssertEqual(try behavior(response), "allow")
         XCTAssertEqual(appState.permissionQueue.count, 0)
     }
 
-    func testPostToolUseDoesNotAffectUnrelatedQueueEntries() async throws {
+    func testPostToolUseDoesNotAffectQueuedPermissionEntries() async throws {
         let appState = AppState()
         let kept = try makePermissionEvent(sessionId: "s1", toolName: "Bash", toolUseId: "keep_me")
         let drained = try makePermissionEvent(sessionId: "s1", toolName: "Bash", toolUseId: "drop_me")
@@ -150,14 +241,18 @@ final class AppStateToolUseCacheTests: XCTestCase {
             toolUseId: "drop_me"
         ))
 
-        let drainedResponse = await drainedTask.value
-        XCTAssertEqual(try behavior(drainedResponse), "deny")
-        XCTAssertEqual(appState.permissionQueue.count, 1)
+        XCTAssertEqual(appState.permissionQueue.count, 2)
         XCTAssertEqual(appState.permissionQueue.first?.toolUseId, "keep_me")
+        await assertTaskNotResolved(keptTask)
+        await assertTaskNotResolved(drainedTask)
 
         appState.approvePermission()
         let keptResponse = await keptTask.value
         XCTAssertEqual(try behavior(keptResponse), "allow")
+
+        appState.approvePermission()
+        let drainedResponse = await drainedTask.value
+        XCTAssertEqual(try behavior(drainedResponse), "allow")
     }
 
     // MARK: - Backfill from cache
@@ -233,5 +328,17 @@ final class AppStateToolUseCacheTests: XCTestCase {
         let hookSpecific = try XCTUnwrap(json["hookSpecificOutput"] as? [String: Any])
         let decision = try XCTUnwrap(hookSpecific["decision"] as? [String: Any])
         return try XCTUnwrap(decision["behavior"] as? String)
+    }
+
+    private func assertTaskNotResolved(_ task: Task<Data, Never>, timeout: TimeInterval = 0.05) async {
+        let exp = expectation(description: "task should stay pending")
+        exp.isInverted = true
+
+        Task {
+            _ = await task.value
+            exp.fulfill()
+        }
+
+        await fulfillment(of: [exp], timeout: timeout)
     }
 }

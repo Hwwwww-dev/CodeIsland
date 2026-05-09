@@ -2,8 +2,8 @@
 //  CodexUsage.swift
 //  CodeIsland
 //
-//  Reads Codex rate-limit / usage data by scanning
-//  ~/.codex/sessions/rollout-*.jsonl for the most recent token_count event.
+//  Reads Codex rate-limit / usage data from the newest recent
+//  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl file.
 //  Ported from MioIsland.
 //
 
@@ -96,16 +96,58 @@ enum CodexUsageLoader {
         fromRootURL rootURL: URL = defaultRootURL,
         fileManager: FileManager = .default
     ) throws -> CodexUsageSnapshot? {
-        guard fileManager.fileExists(atPath: rootURL.path),
-              let enumerator = fileManager.enumerator(
-                at: rootURL,
-                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-                options: [.skipsHiddenFiles]
-              ) else { return nil }
+        guard fileManager.fileExists(atPath: rootURL.path) else { return nil }
 
-        let cutoff = Date().addingTimeInterval(-Self.candidateMaxAge)
-        var candidates: [Candidate] = []
-        for case let fileURL as URL in enumerator {
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-Self.candidateMaxAge)
+
+        for dayURL in recentDateDirectoryURLs(rootURL: rootURL, now: now) {
+            guard let candidate = newestCandidate(in: dayURL, cutoff: cutoff, fileManager: fileManager) else {
+                continue
+            }
+            return loadLatestSnapshot(from: candidate.fileURL, modifiedAt: candidate.modifiedAt)
+        }
+
+        return nil
+    }
+
+    private static func recentDateDirectoryURLs(rootURL: URL, now: Date = Date()) -> [URL] {
+        let calendar = Calendar(identifier: .gregorian)
+
+        return (0..<7).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: now) else { return nil }
+            let components = calendar.dateComponents([.year, .month, .day], from: date)
+            guard let year = components.year,
+                  let month = components.month,
+                  let day = components.day else { return nil }
+
+            return rootURL
+                .appendingPathComponent(String(format: "%04d", year), isDirectory: true)
+                .appendingPathComponent(String(format: "%02d", month), isDirectory: true)
+                .appendingPathComponent(String(format: "%02d", day), isDirectory: true)
+        }
+    }
+
+    private static func isNewer(_ lhs: Candidate, than rhs: Candidate) -> Bool {
+        if lhs.modifiedAt == rhs.modifiedAt {
+            return lhs.fileURL.path.localizedStandardCompare(rhs.fileURL.path) == .orderedDescending
+        }
+        return lhs.modifiedAt > rhs.modifiedAt
+    }
+
+    private static func newestCandidate(
+        in dayURL: URL,
+        cutoff: Date,
+        fileManager: FileManager
+    ) -> Candidate? {
+        guard let fileURLs = try? fileManager.contentsOfDirectory(
+            at: dayURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        var latestCandidate: Candidate?
+        for fileURL in fileURLs {
             guard fileURL.lastPathComponent.hasPrefix("rollout-"),
                   fileURL.pathExtension == "jsonl",
                   let resourceValues = try? fileURL.resourceValues(
@@ -114,22 +156,14 @@ enum CodexUsageLoader {
                   resourceValues.isRegularFile == true,
                   let modifiedAt = resourceValues.contentModificationDate,
                   modifiedAt >= cutoff else { continue }
-            candidates.append(Candidate(fileURL: fileURL, modifiedAt: modifiedAt))
-        }
 
-        let sortedCandidates = candidates.sorted { lhs, rhs in
-            lhs.modifiedAt == rhs.modifiedAt
-                ? lhs.fileURL.path.localizedStandardCompare(rhs.fileURL.path) == .orderedDescending
-                : lhs.modifiedAt > rhs.modifiedAt
-        }
-
-        for candidate in sortedCandidates {
-            if let snapshot = loadLatestSnapshot(from: candidate.fileURL, modifiedAt: candidate.modifiedAt) {
-                return snapshot
+            let candidate = Candidate(fileURL: fileURL, modifiedAt: modifiedAt)
+            if latestCandidate.map({ isNewer(candidate, than: $0) }) ?? true {
+                latestCandidate = candidate
             }
         }
 
-        return nil
+        return latestCandidate
     }
 
     private static func loadLatestSnapshot(from fileURL: URL, modifiedAt: Date) -> CodexUsageSnapshot? {

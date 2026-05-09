@@ -900,12 +900,9 @@ final class AppState {
         let wasWaiting = prevStatus == .waitingApproval || prevStatus == .waitingQuestion
 
         // Cache PreToolUse payloads so downstream events sharing tool_use_id can be
-        // correlated, and drain queue entries whose agent already moved on.
-        let permissionCountBefore = permissionQueue.lazy.filter { $0.event.sessionId == sessionId }.count
+        // correlated, and clear completed cache entries without answering permissions.
         cachePreToolUseIfApplicable(event)
         resolveToolUseIfCompleted(event)
-        let permissionCountAfter = permissionQueue.lazy.filter { $0.event.sessionId == sessionId }.count
-        let surgicallyDrained = permissionCountAfter < permissionCountBefore
 
         let effects = reduceEvent(sessions: &sessions, event: event, maxHistory: maxHistory)
 
@@ -915,29 +912,38 @@ final class AppState {
             maybeBackfillModel(for: sessionId)
         }
 
-        // If session was waiting but received an activity event, the question/permission
-        // was answered externally (e.g. user replied in terminal). Clear pending items.
-        //
-        // Exception: when resolveToolUseIfCompleted already surgically drained the queue
-        // entry matching this event's tool_use_id and other permission requests for the
-        // same session remain, the surgical drain IS the whole story — skip the blanket
-        // sweep so concurrent in-flight tools stay queued (tested by
-        // testPostToolUseDoesNotAffectUnrelatedQueueEntries).
+        // If a question is waiting and activity arrives, treat it as answered externally.
+        // Permission requests are different: late PostToolUse/Stop events can race with
+        // the approval card, so only explicit disconnect/session removal/user action may
+        // resolve them.
         if wasWaiting {
             let en = EventNormalizer.normalizeName(event.eventName)
             // Events that should NOT clear waiting state
             let keepWaiting: Set<String> = ["Notification", "SessionStart", "SessionEnd", "PreCompact"]
-            let skipBlanketDrain = surgicallyDrained && permissionCountAfter > 0
-            if !keepWaiting.contains(en) && !skipBlanketDrain {
-                drainPermissions(forSession: sessionId)
-                drainQuestions(forSession: sessionId)
-                if sessions[sessionId]?.status == .waitingApproval
-                    || sessions[sessionId]?.status == .waitingQuestion {
-                    sessions[sessionId]?.status = (en == "Stop") ? .idle : .processing
+            if !keepWaiting.contains(en) {
+                let pendingPermission = permissionQueue.first { $0.event.sessionId == sessionId }
+                if en == "PermissionDenied" {
+                    drainPermissions(forSession: sessionId)
+                    drainQuestions(forSession: sessionId)
+                    sessions[sessionId]?.status = .processing
                     sessions[sessionId]?.currentTool = nil
                     sessions[sessionId]?.toolDescription = nil
+                    showNextPending()
+                } else if let pendingPermission {
+                    sessions[sessionId]?.status = .waitingApproval
+                    sessions[sessionId]?.currentTool = pendingPermission.event.toolName
+                    sessions[sessionId]?.toolDescription = pendingPermission.event.toolDescription
+                    _ = showNextPending()
+                } else {
+                    drainQuestions(forSession: sessionId)
+                    if sessions[sessionId]?.status == .waitingApproval
+                        || sessions[sessionId]?.status == .waitingQuestion {
+                        sessions[sessionId]?.status = (en == "Stop") ? .idle : .processing
+                        sessions[sessionId]?.currentTool = nil
+                        sessions[sessionId]?.toolDescription = nil
+                    }
+                    showNextPending()
                 }
-                showNextPending()
             }
         }
 

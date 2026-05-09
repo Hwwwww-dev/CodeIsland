@@ -36,9 +36,8 @@ extension AppState {
         )
     }
 
-    /// Drop cache entries for a completed tool invocation. If a PermissionRequest for the
-    /// same id is still sitting in the queue (e.g. agent moved on after a local timeout),
-    /// drain it with a deny so we don't hold the UI hostage to a dead waiter.
+    /// Drop cache entries for a completed/denied tool invocation. A late PostToolUse can
+    /// race with a visible PermissionRequest, so these events must not answer for the user.
     func resolveToolUseIfCompleted(_ event: HookEvent) {
         let normalized = EventNormalizer.normalizeName(event.eventName)
         guard normalized == "PostToolUse"
@@ -48,26 +47,6 @@ extension AppState {
         guard let toolUseId = event.toolUseId, !toolUseId.isEmpty else { return }
 
         pendingToolUses.removeValue(forKey: toolUseId)
-
-        guard let staleIndex = permissionQueue.firstIndex(where: { $0.toolUseId == toolUseId })
-        else { return }
-
-        let stale = permissionQueue.remove(at: staleIndex)
-        let denyBody = #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}"#
-        stale.continuation.resume(returning: Data(denyBody.utf8))
-
-        // If the card we were showing was the drained one, advance to the next pending
-        // request (or collapse if nothing is left).
-        let wasHead = staleIndex == 0
-        if wasHead {
-            if permissionQueue.isEmpty {
-                if case .approvalCard = surface {
-                    surface = .collapsed
-                }
-            } else {
-                showNextPending()
-            }
-        }
     }
 
     /// Remove stale cache entries. Called from the cleanup timer tick.
