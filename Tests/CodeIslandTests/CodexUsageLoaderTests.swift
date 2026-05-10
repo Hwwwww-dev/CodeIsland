@@ -3,6 +3,29 @@ import XCTest
 @testable import CodeIsland
 
 final class CodexUsageLoaderTests: XCTestCase {
+    @MainActor
+    func testMonitorStopKeepsLastSnapshotVisible() async throws {
+        let expected = makeSnapshot(usedPercent: 31)
+        let monitor = CodexUsageMonitor(loadSnapshot: { expected })
+
+        await monitor.refresh(force: true)
+        monitor.stop()
+
+        XCTAssertEqual(monitor.snapshot, expected)
+    }
+
+    @MainActor
+    func testMonitorRefreshKeepsExistingSnapshotWhenLoadReturnsNil() async throws {
+        let first = makeSnapshot(usedPercent: 45)
+        let loader = SnapshotSequence([first, nil])
+        let monitor = CodexUsageMonitor(loadSnapshot: { loader.next() })
+
+        await monitor.refresh(force: true)
+        await monitor.refresh(force: true)
+
+        XCTAssertEqual(monitor.snapshot, first)
+    }
+
     func testLoadPrefersClosestDateDirectoryOverNewerModifiedAtInOlderDirectory() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-usage-\(UUID().uuidString)", isDirectory: true)
@@ -106,5 +129,40 @@ final class CodexUsageLoaderTests: XCTestCase {
             .appendingPathComponent(String(format: "%04d", components.year!), isDirectory: true)
             .appendingPathComponent(String(format: "%02d", components.month!), isDirectory: true)
             .appendingPathComponent(String(format: "%02d", components.day!), isDirectory: true)
+    }
+
+    private func makeSnapshot(usedPercent: Double) -> CodexUsageSnapshot {
+        CodexUsageSnapshot(
+            sourceFilePath: "/tmp/rollout-test.jsonl",
+            capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            planType: "pro",
+            limitID: nil,
+            windows: [
+                CodexUsageWindow(
+                    key: "primary",
+                    label: "5h",
+                    usedPercentage: usedPercent,
+                    leftPercentage: 100 - usedPercent,
+                    windowMinutes: 300,
+                    resetsAt: Date(timeIntervalSince1970: 1_700_003_600)
+                )
+            ]
+        )
+    }
+}
+
+private final class SnapshotSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshots: [CodexUsageSnapshot?]
+
+    init(_ snapshots: [CodexUsageSnapshot?]) {
+        self.snapshots = snapshots
+    }
+
+    func next() -> CodexUsageSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !snapshots.isEmpty else { return nil }
+        return snapshots.removeFirst()
     }
 }

@@ -44,10 +44,15 @@ final class CodexUsageMonitor: ObservableObject {
     private var isLoading = false
     private var lastRefreshedAt: Date?
     private static let refreshTTL: TimeInterval = 10
+    private let loadSnapshot: @Sendable () -> CodexUsageSnapshot?
 
     private var refreshTimer: Timer?
 
-    private init() {}
+    init(loadSnapshot: @escaping @Sendable () -> CodexUsageSnapshot? = {
+        (try? CodexUsageLoader.load()) ?? nil
+    }) {
+        self.loadSnapshot = loadSnapshot
+    }
 
     func start() {
         guard refreshTimer == nil else { return }
@@ -60,19 +65,22 @@ final class CodexUsageMonitor: ObservableObject {
     func stop() {
         refreshTimer?.invalidate()
         refreshTimer = nil
-        snapshot = nil
     }
 
     func refresh(force: Bool = false) async {
         guard !isLoading else { return }
-        if !force, let last = lastRefreshedAt, Date().timeIntervalSince(last) < Self.refreshTTL {
+        if !force, snapshot != nil, let last = lastRefreshedAt, Date().timeIntervalSince(last) < Self.refreshTTL {
             return
         }
         isLoading = true
         defer { isLoading = false }
-        snapshot = await Task.detached(priority: .utility) {
-            (try? CodexUsageLoader.load()) ?? nil
+        let loader = loadSnapshot
+        let loadedSnapshot = await Task.detached(priority: .utility) {
+            loader()
         }.value
+        if let loadedSnapshot {
+            snapshot = loadedSnapshot
+        }
         lastRefreshedAt = Date()
     }
 }

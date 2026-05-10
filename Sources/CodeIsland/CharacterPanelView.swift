@@ -231,7 +231,7 @@ struct CharacterPanelView: View {
                 }
                 .frame(height: 3)
 
-                Text("\(formatStatValue(progress))/1k")
+                Text("\(formatStatValue(progress, snapMax: 1000))/1k")
                     .font(.system(size: 7, weight: .regular, design: .monospaced))
                     .foregroundStyle(.white.opacity(0.3))
                     .lineLimit(1)
@@ -246,8 +246,8 @@ struct CharacterPanelView: View {
 /// Uses string-suffix trim instead of float equality to avoid `100.0001` slipping through as "100.0".
 /// Within 0.1 of max snap display to "100" — sub-100 dust (e.g. 99.92) reads as "stuck below max"
 /// otherwise. Display-only; state value retains its precision so decay still works.
-fileprivate func formatStatValue(_ value: Double) -> String {
-    if value >= 99.9 { return "100" }
+fileprivate func formatStatValue(_ value: Double, snapMax: Double = 100) -> String {
+    if value >= snapMax - 0.1 { return String(format: "%.0f", snapMax) }
     let s = String(format: "%.1f", value)
     if s.hasSuffix(".0") {
         return String(s.dropLast(2))
