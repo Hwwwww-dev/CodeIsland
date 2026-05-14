@@ -920,7 +920,7 @@ final class CharacterEngineTests: XCTestCase {
     }
 
     @MainActor
-    func testEvent_focusUsesFallbackActiveTimeWithoutSessionStart() throws {
+    func testEvent_focusFallbackToolEventsDoNotCashInWallClockGaps() throws {
         var stats = CharacterStats()
         stats.cyber.focus = 0
         var now = Date(timeIntervalSince1970: 1_700_000_000)
@@ -943,8 +943,9 @@ final class CharacterEngineTests: XCTestCase {
             now = now.addingTimeInterval(120)
         }
 
-        // 600 active seconds. 600s threshold → +20. Two 5-minute bands → +6. Total = 26.
-        XCTAssertEqual(engine.characterStats.cyber.focus, 26, accuracy: 0.001)
+        // Missing PreToolUse means each event only gets the tiny fallback span;
+        // wall-clock spacing between PostToolUse events no longer grants focus.
+        XCTAssertEqual(engine.characterStats.cyber.focus, 0, accuracy: 0.001)
     }
 
     func testEvent_taste_incrementedByHighSuccessSession() {
@@ -1014,7 +1015,7 @@ final class CharacterEngineTests: XCTestCase {
     }
 
     @MainActor
-    func testFocus_activePromptTimeAccumulatesWithoutTools() throws {
+    func testFocus_activePromptTimeDoesNotAccumulateWithoutTools() throws {
         var stats = CharacterStats()
         var now = Date(timeIntervalSince1970: 1_700_000_000)
         stats.lastTickedAt = now
@@ -1029,7 +1030,7 @@ final class CharacterEngineTests: XCTestCase {
         now = now.addingTimeInterval(600)
         engine.sampleActivePromptTime(runningSessionIds: [sid], now: now)
 
-        XCTAssertEqual(engine.characterStats.cyber.focus, 26, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 0, accuracy: 0.001)
     }
 
     @MainActor
@@ -1665,7 +1666,7 @@ final class CharacterEngineTests: XCTestCase {
 
     @MainActor
     func testFocus_singleSession_allowsRewardAboveFifty() throws {
-        // 8000s preloaded: threshold bonus +20, floor(8000/300)=26 bands → +78.
+        // 8000s preloaded: floor(8000/600)=13 bands → +130.
         let engine = CharacterEngine.makeForTesting()
         engine.testInject_sessionFocusActiveSeconds(sessionId: "cap1", seconds: 8000)
         // Trigger focus evaluation via a PostToolUse event.
@@ -1674,7 +1675,7 @@ final class CharacterEngineTests: XCTestCase {
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evt, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 98, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 130, accuracy: 0.001)
     }
 
     @MainActor
@@ -1688,7 +1689,7 @@ final class CharacterEngineTests: XCTestCase {
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evtA, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 98, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 130, accuracy: 0.001)
 
         engine.testInject_sessionFocusActiveSeconds(sessionId: "sB", seconds: 8000)
         let evtB = try makeHookEvent([
@@ -1696,7 +1697,7 @@ final class CharacterEngineTests: XCTestCase {
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evtB, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 196, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 260, accuracy: 0.001)
     }
 
     @MainActor
@@ -1710,19 +1711,19 @@ final class CharacterEngineTests: XCTestCase {
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evtA, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 98, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 130, accuracy: 0.001)
 
         // End session — clears per-session focus tracking.
         engine.endSession(sessionId: "reuse")
 
-        // New session with same id can earn another 56.
+        // New session with same id can earn another full batch.
         engine.testInject_sessionFocusActiveSeconds(sessionId: "reuse", seconds: 8000)
         let evtB = try makeHookEvent([
             "hook_event_name": "PostToolUse", "session_id": "reuse",
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evtB, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 196, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 260, accuracy: 0.001)
     }
 
     // MARK: - Vital Coupling

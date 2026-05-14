@@ -26,6 +26,31 @@ final class CodexUsageLoaderTests: XCTestCase {
         XCTAssertEqual(monitor.snapshot, first)
     }
 
+    @MainActor
+    func testMonitorRefreshThrottlesNilLoads() async throws {
+        let loader = SnapshotSequence([nil, makeSnapshot(usedPercent: 52)])
+        let monitor = CodexUsageMonitor(loadSnapshot: { loader.next() })
+
+        await monitor.refresh()
+        await monitor.refresh()
+
+        XCTAssertNil(monitor.snapshot)
+        XCTAssertEqual(loader.callCount(), 1)
+    }
+
+    @MainActor
+    func testMonitorForceRefreshBypassesNilThrottle() async throws {
+        let expected = makeSnapshot(usedPercent: 52)
+        let loader = SnapshotSequence([nil, expected])
+        let monitor = CodexUsageMonitor(loadSnapshot: { loader.next() })
+
+        await monitor.refresh()
+        await monitor.refresh(force: true)
+
+        XCTAssertEqual(monitor.snapshot, expected)
+        XCTAssertEqual(loader.callCount(), 2)
+    }
+
     func testLoadPrefersNewestModifiedFileAcrossDateDirectories() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-usage-\(UUID().uuidString)", isDirectory: true)
@@ -178,6 +203,7 @@ final class CodexUsageLoaderTests: XCTestCase {
 private final class SnapshotSequence: @unchecked Sendable {
     private let lock = NSLock()
     private var snapshots: [CodexUsageSnapshot?]
+    private var calls = 0
 
     init(_ snapshots: [CodexUsageSnapshot?]) {
         self.snapshots = snapshots
@@ -186,7 +212,14 @@ private final class SnapshotSequence: @unchecked Sendable {
     func next() -> CodexUsageSnapshot? {
         lock.lock()
         defer { lock.unlock() }
+        calls += 1
         guard !snapshots.isEmpty else { return nil }
         return snapshots.removeFirst()
+    }
+
+    func callCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
     }
 }

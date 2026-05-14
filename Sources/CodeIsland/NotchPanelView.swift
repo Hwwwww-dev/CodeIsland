@@ -25,6 +25,9 @@ struct NotchPanelView: View {
     @State private var curtainOffset: CGFloat = 0
     @State private var curtainOpacity: Double = 1
     @State private var displayedToolStatus: Bool = SettingsDefaults.showToolStatus
+    @State private var lastUsageHoverRefreshAt: Date = .distantPast
+
+    private static let usageHoverRefreshMinInterval: TimeInterval = 10
 
     private var isActive: Bool { !appState.sessions.isEmpty }
     /// First launch / no-session state should still render a visible marker so the app
@@ -107,6 +110,9 @@ struct NotchPanelView: View {
     }
 
     private func refreshUsageMonitors() {
+        let now = Date()
+        guard now.timeIntervalSince(lastUsageHoverRefreshAt) >= Self.usageHoverRefreshMinInterval else { return }
+        lastUsageHoverRefreshAt = now
         Task { @MainActor in
             await RateLimitMonitor.shared.refresh()
             await CodexUsageMonitor.shared.refresh()

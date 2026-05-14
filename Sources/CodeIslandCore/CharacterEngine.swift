@@ -88,10 +88,13 @@ private let activeRecoveryDamping: Double = 0.1
 private let lazyTickMinInterval: TimeInterval = 1.0
 /// Active prompt sampling interval. Keeps active time from depending on Stop delivery.
 private let activePromptSampleInterval: TimeInterval = 5.0
-private let focusRewardIntervalSeconds: Int = 300
-private let focusRewardPerInterval: Double = 3
-private let focusThresholdSeconds: Int = 600
-private let focusThresholdReward: Double = 20
+private let focusRewardIntervalSeconds: Int = 600
+private let focusRewardPerInterval: Double = 10
+private let focusContinuousBonusIntervalSeconds: Int = 1800
+private let focusContinuousBonusPerInterval: Double = 15
+private let focusGapFullCreditSeconds: Int = 30
+private let focusGapMaxBridgeSeconds: Int = 120
+private let focusFallbackToolSeconds: Int = 3
 /// Meal formula: tools converted to hunger, with a per-minute throughput cap
 /// that lets time gate tools (anti-spam against parallel-subagent bursts):
 ///     toolCredit = min(toolCount, activeMinutes × toolCreditPerMinute)
@@ -253,7 +256,6 @@ private struct TrackedSessionMetadata: Equatable {
 private struct EngineTransientStateSnapshot {
     let lastActiveSource: String?
     let sessionMetadataByID: [String: TrackedSessionMetadata]
-    let sessionFocusThresholdFired: [String: Bool]
     let promptStartTimes: [String: Date]
     let promptLastSampleTimes: [String: Date]
     let promptTurnOrigins: [String: PromptTurnOrigin]
@@ -262,6 +264,10 @@ private struct EngineTransientStateSnapshot {
     let sessionHealthActiveSeconds: [String: Int]
     let sessionActiveSeconds: [String: Int]
     let sessionLastFocusActiveSeconds: [String: Int]
+    let sessionFocusContinuousSeconds: [String: Int]
+    let sessionLastFocusContinuousRewardSeconds: [String: Int]
+    let focusToolStartTimes: [String: Date]
+    let lastFocusToolCompletedAt: [String: Date]
     let lastToolEventTime: [String: Date]
     let sessionsCounted: Set<String>
     let lastLazyTickAt: Date
@@ -281,8 +287,6 @@ public final class CharacterEngine {
     private var lastActiveSource: String?
     /// Per-session CLI/session metadata used to make derived events traceable.
     private var sessionMetadataByID: [String: TrackedSessionMetadata] = [:]
-    /// Tracks per-session focus threshold to fire the 10-minute bonus only once per session.
-    private var sessionFocusThresholdFired: [String: Bool] = [:]
     /// Per-session start time for the current user prompt turn.
     private var promptStartTimes: [String: Date] = [:]
     /// Per-session timestamp of the last credited active prompt sample.
@@ -299,11 +303,19 @@ public final class CharacterEngine {
     private var sessionPromptToolCount: [String: Int] = [:]
     /// Per-session prompt-turn seconds used for continuous-work health penalties.
     private var sessionHealthActiveSeconds: [String: Int] = [:]
-    /// Per-session seconds credited from tool spacing, used only for focus rewards.
+    /// Per-session effective tool-work seconds, used only for focus rewards.
     private var sessionActiveSeconds: [String: Int] = [:]
-    /// Per-session tool-spacing marker for the last focus streak reward.
+    /// Per-session effective-work marker for the last base focus reward.
     private var sessionLastFocusActiveSeconds: [String: Int] = [:]
-    /// Per-session timestamp of the most recent tool event, used for focus rewards.
+    /// Per-session continuous effective-work seconds since the last long gap.
+    private var sessionFocusContinuousSeconds: [String: Int] = [:]
+    /// Per-session continuous-work marker for 30-minute streak bonuses.
+    private var sessionLastFocusContinuousRewardSeconds: [String: Int] = [:]
+    /// Active tool start timestamps keyed by session + tool_use_id.
+    private var focusToolStartTimes: [String: Date] = [:]
+    /// Per-session timestamp of the most recent completed tool, used for gap credit.
+    private var lastFocusToolCompletedAt: [String: Date] = [:]
+    /// Per-session timestamp of the most recent tool event, retained for diagnostics.
     private var lastToolEventTime: [String: Date] = [:]
     /// Sessions that have already contributed to totalSessions. Prevents double-count
     /// when both SessionStart and UserPromptSubmit (or first PostToolUse) arrive.
@@ -415,6 +427,7 @@ public final class CharacterEngine {
             applyHookEventMutations(
                 eventName: eventName,
                 toolName: toolName,
+                toolUseId: event.toolUseId,
                 sessionId: sessionId,
                 now: now,
                 rawJSON: event.rawJSON,
@@ -459,6 +472,7 @@ public final class CharacterEngine {
     private func applyHookEventMutations(
         eventName: String,
         toolName: String,
+        toolUseId: String?,
         sessionId: String,
         now: Date,
         rawJSON: [String: Any],
@@ -478,12 +492,17 @@ public final class CharacterEngine {
             characterStats.cyber.collab += 2
             startPromptTurn(sessionId: sessionId, now: now)
 
+        case "PreToolUse":
+            countSessionIfFirst(sessionId: sessionId)
+            beginFocusToolUse(sessionId: sessionId, toolUseId: toolUseId, now: now, metadata: &metadata)
+
         case "PostToolUse":
             countSessionIfFirst(sessionId: sessionId)
             _ = ensurePromptTurnStarted(sessionId: sessionId, now: now)
             _ = creditPromptActiveTime(sessionId: sessionId, now: now, force: true)
             handlePostToolUse(
                 toolName: toolName,
+                toolUseId: toolUseId,
                 sessionId: sessionId,
                 source: source,
                 now: now,
@@ -670,7 +689,8 @@ public final class CharacterEngine {
         let totalTools = ledgerInt(derived["totalTools"]) ?? 0
         let semanticOverride = toolSemantic(from: ledgerString(derived["semantic"]))
         let displayNameOverride = ledgerString(derived["displayName"])
-        let focusDeltaOverride = ledgerInt(derived["focusDeltaSeconds"])
+        let focusDeltaOverride = ledgerInt(derived["focusEffectiveSeconds"])
+            ?? ledgerInt(derived["focusDeltaSeconds"])
 
         var metadata = EventMutationMetadata(derived: derived)
 
@@ -681,6 +701,7 @@ public final class CharacterEngine {
             _ = creditPromptActiveTime(sessionId: sessionId, now: now, force: true)
             handlePostToolUse(
                 toolName: ledgerEvent.toolName ?? "",
+                toolUseId: ledgerEvent.toolUseID,
                 sessionId: sessionId,
                 source: ledgerEvent.source,
                 now: now,
@@ -697,6 +718,7 @@ public final class CharacterEngine {
             applyHookEventMutations(
                 eventName: eventName,
                 toolName: ledgerEvent.toolName ?? "",
+                toolUseId: ledgerEvent.toolUseID,
                 sessionId: sessionId,
                 now: now,
                 rawJSON: rawJSON,
@@ -1108,6 +1130,7 @@ public final class CharacterEngine {
 
     private func handlePostToolUse(
         toolName: String,
+        toolUseId: String?,
         sessionId: String,
         source: String?,
         now: Date,
@@ -1137,8 +1160,8 @@ public final class CharacterEngine {
             characterStats.stats.cliUseCount[source, default: 0] += 1
         }
 
-        // Retained for diagnostics/replay metadata; focus itself is now driven
-        // by prompt active time so long thinking sessions aren't starved.
+        // Retained for diagnostics/replay metadata; focus itself is credited
+        // from real tool spans plus short tool-to-tool gaps.
         let delta: Int = {
             if let focusDeltaOverride { return focusDeltaOverride }
             if let last = lastToolEventTime[sessionId] {
@@ -1148,6 +1171,15 @@ public final class CharacterEngine {
         }()
         metadata.derived["focusDeltaSeconds"] = .int(Int64(delta))
         lastToolEventTime[sessionId] = now
+        let focusGranted = finishFocusToolUse(
+            sessionId: sessionId,
+            toolUseId: toolUseId,
+            semantic: semantic,
+            now: now,
+            effectiveSecondsOverride: focusDeltaOverride,
+            metadata: &metadata
+        )
+        metadata.derived["focusGranted"] = .double(focusGranted)
 
         if success {
             // Per-tool energy cost: kept (signal: tools-have-a-cost) but
@@ -1175,9 +1207,6 @@ public final class CharacterEngine {
             case .manage, .unknown:
                 break
             }
-
-            let focusGranted = handleFocusProgress(sessionId: sessionId)
-            metadata.derived["focusGranted"] = .double(focusGranted)
         } else {
             applyVitalDelta(.mood, -2)
         }
@@ -1257,23 +1286,96 @@ public final class CharacterEngine {
         return amount
     }
 
+    private func beginFocusToolUse(
+        sessionId: String,
+        toolUseId: String?,
+        now: Date,
+        metadata: inout EventMutationMetadata
+    ) {
+        if let completedAt = lastFocusToolCompletedAt[sessionId] {
+            let rawGap = Int(now.timeIntervalSince(completedAt))
+            if rawGap >= 0, rawGap <= focusGapMaxBridgeSeconds {
+                let creditedGap = min(rawGap, focusGapFullCreditSeconds)
+                let granted = creditFocusActiveSeconds(sessionId: sessionId, seconds: creditedGap)
+                metadata.derived["focusGapSeconds"] = .int(Int64(creditedGap))
+                metadata.derived["focusGapGranted"] = .double(granted)
+            } else {
+                resetFocusContinuity(sessionId: sessionId)
+                metadata.derived["focusGapReset"] = .bool(true)
+            }
+        }
+
+        focusToolStartTimes[focusToolKey(sessionId: sessionId, toolUseId: toolUseId)] = now
+    }
+
+    @discardableResult
+    private func finishFocusToolUse(
+        sessionId: String,
+        toolUseId: String?,
+        semantic: ToolSemantic,
+        now: Date,
+        effectiveSecondsOverride: Int?,
+        metadata: inout EventMutationMetadata
+    ) -> Double {
+        let key = focusToolKey(sessionId: sessionId, toolUseId: toolUseId)
+        let startedAt = focusToolStartTimes.removeValue(forKey: key)
+        let cap = focusToolDurationCap(for: semantic)
+        let rawSeconds: Int
+        if let effectiveSecondsOverride {
+            rawSeconds = effectiveSecondsOverride
+        } else if let startedAt {
+            rawSeconds = max(0, Int(now.timeIntervalSince(startedAt)))
+        } else {
+            if let completedAt = lastFocusToolCompletedAt[sessionId],
+               now.timeIntervalSince(completedAt) > TimeInterval(focusGapMaxBridgeSeconds) {
+                resetFocusContinuity(sessionId: sessionId)
+            }
+            rawSeconds = focusFallbackToolSeconds
+        }
+
+        let creditedSeconds = min(max(0, rawSeconds), cap)
+        let granted = creditFocusActiveSeconds(sessionId: sessionId, seconds: creditedSeconds)
+        metadata.derived["focusEffectiveSeconds"] = .int(Int64(creditedSeconds))
+        metadata.derived["focusToolDurationCapSeconds"] = .int(Int64(cap))
+        lastFocusToolCompletedAt[sessionId] = now
+        return granted
+    }
+
+    private func focusToolKey(sessionId: String, toolUseId: String?) -> String {
+        "\(sessionId)|\(toolUseId ?? "_session")"
+    }
+
+    private func focusToolDurationCap(for semantic: ToolSemantic) -> Int {
+        switch semantic {
+        case .read, .search, .network:
+            return 15
+        case .write:
+            return 45
+        case .execute:
+            return 90
+        case .manage:
+            return 120
+        case .unknown:
+            return 20
+        }
+    }
+
     @discardableResult
     private func creditFocusActiveSeconds(sessionId: String, seconds: Int) -> Double {
         guard seconds > 0 else { return 0 }
         sessionActiveSeconds[sessionId, default: 0] += seconds
+        sessionFocusContinuousSeconds[sessionId, default: 0] += seconds
         return handleFocusProgress(sessionId: sessionId)
+    }
+
+    private func resetFocusContinuity(sessionId: String) {
+        sessionFocusContinuousSeconds[sessionId] = 0
+        sessionLastFocusContinuousRewardSeconds[sessionId] = 0
     }
 
     private func handleFocusProgress(sessionId: String) -> Double {
         guard let activeSeconds = sessionActiveSeconds[sessionId] else { return 0 }
         var granted = 0.0
-
-        // Focus follows credited active prompt time. Tool events only force
-        // sampling; long thinking/model waits should still count as focused work.
-        if activeSeconds >= focusThresholdSeconds && sessionFocusThresholdFired[sessionId] != true {
-            sessionFocusThresholdFired[sessionId] = true
-            granted += grantFocus(focusThresholdReward)
-        }
 
         let lastRewardAt = sessionLastFocusActiveSeconds[sessionId] ?? 0
         let currentRewardAt = (activeSeconds / focusRewardIntervalSeconds) * focusRewardIntervalSeconds
@@ -1281,6 +1383,16 @@ public final class CharacterEngine {
             let rewardCount = (currentRewardAt - lastRewardAt) / focusRewardIntervalSeconds
             granted += grantFocus(Double(rewardCount) * focusRewardPerInterval)
             sessionLastFocusActiveSeconds[sessionId] = currentRewardAt
+        }
+
+        let continuousSeconds = sessionFocusContinuousSeconds[sessionId] ?? 0
+        let lastContinuousRewardAt = sessionLastFocusContinuousRewardSeconds[sessionId] ?? 0
+        let currentContinuousRewardAt = (continuousSeconds / focusContinuousBonusIntervalSeconds)
+            * focusContinuousBonusIntervalSeconds
+        if currentContinuousRewardAt > lastContinuousRewardAt {
+            let rewardCount = (currentContinuousRewardAt - lastContinuousRewardAt) / focusContinuousBonusIntervalSeconds
+            granted += grantFocus(Double(rewardCount) * focusContinuousBonusPerInterval)
+            sessionLastFocusContinuousRewardSeconds[sessionId] = currentContinuousRewardAt
         }
         return granted
     }
@@ -1503,7 +1615,6 @@ public final class CharacterEngine {
         // and Gemini-class CLIs) accrue tools but zero active seconds and
         // produce meal=0 forever.
         sessionMealActiveSeconds[sessionId, default: 0] += seconds
-        _ = creditFocusActiveSeconds(sessionId: sessionId, seconds: seconds)
         applyContinuousWorkHealthPenalty(sessionId: sessionId, addSeconds: seconds)
         promptLastSampleTimes[sessionId] = lastSample.addingTimeInterval(TimeInterval(seconds))
         return true
@@ -1539,13 +1650,16 @@ public final class CharacterEngine {
 
     private func clearSessionTracking(sessionId: String) {
         sessionMetadataByID.removeValue(forKey: sessionId)
-        sessionFocusThresholdFired.removeValue(forKey: sessionId)
         clearPromptTurn(sessionId: sessionId)
         sessionMealActiveSeconds.removeValue(forKey: sessionId)
         sessionPromptToolCount.removeValue(forKey: sessionId)
         sessionHealthActiveSeconds.removeValue(forKey: sessionId)
         sessionActiveSeconds.removeValue(forKey: sessionId)
         sessionLastFocusActiveSeconds.removeValue(forKey: sessionId)
+        sessionFocusContinuousSeconds.removeValue(forKey: sessionId)
+        sessionLastFocusContinuousRewardSeconds.removeValue(forKey: sessionId)
+        focusToolStartTimes = focusToolStartTimes.filter { !$0.key.hasPrefix("\(sessionId)|") }
+        lastFocusToolCompletedAt.removeValue(forKey: sessionId)
         lastToolEventTime.removeValue(forKey: sessionId)
         sessionsCounted.remove(sessionId)
     }
@@ -1992,7 +2106,6 @@ public final class CharacterEngine {
         EngineTransientStateSnapshot(
             lastActiveSource: lastActiveSource,
             sessionMetadataByID: sessionMetadataByID,
-            sessionFocusThresholdFired: sessionFocusThresholdFired,
             promptStartTimes: promptStartTimes,
             promptLastSampleTimes: promptLastSampleTimes,
             promptTurnOrigins: promptTurnOrigins,
@@ -2001,6 +2114,10 @@ public final class CharacterEngine {
             sessionHealthActiveSeconds: sessionHealthActiveSeconds,
             sessionActiveSeconds: sessionActiveSeconds,
             sessionLastFocusActiveSeconds: sessionLastFocusActiveSeconds,
+            sessionFocusContinuousSeconds: sessionFocusContinuousSeconds,
+            sessionLastFocusContinuousRewardSeconds: sessionLastFocusContinuousRewardSeconds,
+            focusToolStartTimes: focusToolStartTimes,
+            lastFocusToolCompletedAt: lastFocusToolCompletedAt,
             lastToolEventTime: lastToolEventTime,
             sessionsCounted: sessionsCounted,
             lastLazyTickAt: lastLazyTickAt,
@@ -2011,7 +2128,6 @@ public final class CharacterEngine {
     private func restoreTransientState(_ snapshot: EngineTransientStateSnapshot) {
         lastActiveSource = snapshot.lastActiveSource
         sessionMetadataByID = snapshot.sessionMetadataByID
-        sessionFocusThresholdFired = snapshot.sessionFocusThresholdFired
         promptStartTimes = snapshot.promptStartTimes
         promptLastSampleTimes = snapshot.promptLastSampleTimes
         promptTurnOrigins = snapshot.promptTurnOrigins
@@ -2020,6 +2136,10 @@ public final class CharacterEngine {
         sessionHealthActiveSeconds = snapshot.sessionHealthActiveSeconds
         sessionActiveSeconds = snapshot.sessionActiveSeconds
         sessionLastFocusActiveSeconds = snapshot.sessionLastFocusActiveSeconds
+        sessionFocusContinuousSeconds = snapshot.sessionFocusContinuousSeconds
+        sessionLastFocusContinuousRewardSeconds = snapshot.sessionLastFocusContinuousRewardSeconds
+        focusToolStartTimes = snapshot.focusToolStartTimes
+        lastFocusToolCompletedAt = snapshot.lastFocusToolCompletedAt
         lastToolEventTime = snapshot.lastToolEventTime
         sessionsCounted = snapshot.sessionsCounted
         lastLazyTickAt = snapshot.lastLazyTickAt
@@ -2029,7 +2149,6 @@ public final class CharacterEngine {
     private func clearAllTransientTracking() {
         lastActiveSource = nil
         sessionMetadataByID.removeAll()
-        sessionFocusThresholdFired.removeAll()
         promptStartTimes.removeAll()
         promptLastSampleTimes.removeAll()
         promptTurnOrigins.removeAll()
@@ -2038,6 +2157,10 @@ public final class CharacterEngine {
         sessionHealthActiveSeconds.removeAll()
         sessionActiveSeconds.removeAll()
         sessionLastFocusActiveSeconds.removeAll()
+        sessionFocusContinuousSeconds.removeAll()
+        sessionLastFocusContinuousRewardSeconds.removeAll()
+        focusToolStartTimes.removeAll()
+        lastFocusToolCompletedAt.removeAll()
         lastToolEventTime.removeAll()
         sessionsCounted.removeAll()
         lastLazyTickAt = .distantPast
@@ -2176,6 +2299,7 @@ public final class CharacterEngine {
     private func normalize(_ name: String) -> String {
         // Map snake_case / camelCase variants to canonical names
         switch name.lowercased().replacingOccurrences(of: "_", with: "") {
+        case "pretooluse":     return "PreToolUse"
         case "posttooluse":    return "PostToolUse"
         case "stop", "poststop": return "PostStop"
         case "userpromptsubmit": return "UserPromptSubmit"

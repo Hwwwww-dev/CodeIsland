@@ -43,6 +43,8 @@ final class CodexUsageMonitor: ObservableObject {
     @Published private(set) var snapshot: CodexUsageSnapshot?
     private var isLoading = false
     private var lastRefreshedAt: Date?
+    /// Applies to misses too. Hover/start can fire repeatedly while Codex has
+    /// no usage file yet; without this, every hover scans ~/.codex/sessions.
     private static let refreshTTL: TimeInterval = 10
     private let loadSnapshot: @Sendable () -> CodexUsageSnapshot?
 
@@ -69,7 +71,7 @@ final class CodexUsageMonitor: ObservableObject {
 
     func refresh(force: Bool = false) async {
         guard !isLoading else { return }
-        if !force, snapshot != nil, let last = lastRefreshedAt, Date().timeIntervalSince(last) < Self.refreshTTL {
+        if !force, let last = lastRefreshedAt, Date().timeIntervalSince(last) < Self.refreshTTL {
             return
         }
         isLoading = true

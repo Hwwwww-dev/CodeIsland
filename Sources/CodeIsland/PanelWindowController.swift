@@ -184,6 +184,8 @@ class PanelWindowController: NSObject, NSWindowDelegate {
     /// panelWidth or notchHeight changes.
     private var visibleIslandWidth: CGFloat = 0
     private var visibleIslandHeight: CGFloat = 0
+    private var lastUsageHoverRefreshAt: Date = .distantPast
+    private static let usageHoverRefreshMinInterval: TimeInterval = 10
 
     init(appState: AppState) {
         self.appState = appState
@@ -762,16 +764,24 @@ class PanelWindowController: NSObject, NSWindowDelegate {
                 performer.perform(.alignment, performanceTime: .default)
             }
         }
-        Task { @MainActor in
-            await RateLimitMonitor.shared.refresh()
-            await CodexUsageMonitor.shared.refresh()
-        }
+        refreshUsageMonitorsFromHover()
         withAnimation(NotchAnimation.open) {
             appState.surface = .sessionList
             appState.cancelCompletionQueue()
             if appState.activeSessionId == nil {
                 appState.activeSessionId = appState.sessions.keys.sorted().first
             }
+        }
+    }
+
+    @MainActor
+    private func refreshUsageMonitorsFromHover() {
+        let now = Date()
+        guard now.timeIntervalSince(lastUsageHoverRefreshAt) >= Self.usageHoverRefreshMinInterval else { return }
+        lastUsageHoverRefreshAt = now
+        Task { @MainActor in
+            await RateLimitMonitor.shared.refresh()
+            await CodexUsageMonitor.shared.refresh()
         }
     }
 
