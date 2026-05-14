@@ -88,6 +88,10 @@ private let activeRecoveryDamping: Double = 0.1
 private let lazyTickMinInterval: TimeInterval = 1.0
 /// Active prompt sampling interval. Keeps active time from depending on Stop delivery.
 private let activePromptSampleInterval: TimeInterval = 5.0
+private let focusRewardIntervalSeconds: Int = 300
+private let focusRewardPerInterval: Double = 3
+private let focusThresholdSeconds: Int = 600
+private let focusThresholdReward: Double = 20
 /// Meal formula: tools converted to hunger, with a per-minute throughput cap
 /// that lets time gate tools (anti-spam against parallel-subagent bursts):
 ///     toolCredit = min(toolCount, activeMinutes × toolCreditPerMinute)
@@ -477,6 +481,7 @@ public final class CharacterEngine {
         case "PostToolUse":
             countSessionIfFirst(sessionId: sessionId)
             _ = ensurePromptTurnStarted(sessionId: sessionId, now: now)
+            _ = creditPromptActiveTime(sessionId: sessionId, now: now, force: true)
             handlePostToolUse(
                 toolName: toolName,
                 sessionId: sessionId,
@@ -673,6 +678,7 @@ public final class CharacterEngine {
         case "PostToolUse":
             countSessionIfFirst(sessionId: sessionId)
             _ = ensurePromptTurnStarted(sessionId: sessionId, now: now)
+            _ = creditPromptActiveTime(sessionId: sessionId, now: now, force: true)
             handlePostToolUse(
                 toolName: ledgerEvent.toolName ?? "",
                 sessionId: sessionId,
@@ -1131,7 +1137,8 @@ public final class CharacterEngine {
             characterStats.stats.cliUseCount[source, default: 0] += 1
         }
 
-        // Inter-tool spacing for focus ladder (unchanged).
+        // Retained for diagnostics/replay metadata; focus itself is now driven
+        // by prompt active time so long thinking sessions aren't starved.
         let delta: Int = {
             if let focusDeltaOverride { return focusDeltaOverride }
             if let last = lastToolEventTime[sessionId] {
@@ -1140,9 +1147,6 @@ public final class CharacterEngine {
             return 30
         }()
         metadata.derived["focusDeltaSeconds"] = .int(Int64(delta))
-        if delta > 0 {
-            sessionActiveSeconds[sessionId, default: 0] += delta
-        }
         lastToolEventTime[sessionId] = now
 
         if success {
@@ -1253,22 +1257,29 @@ public final class CharacterEngine {
         return amount
     }
 
+    @discardableResult
+    private func creditFocusActiveSeconds(sessionId: String, seconds: Int) -> Double {
+        guard seconds > 0 else { return 0 }
+        sessionActiveSeconds[sessionId, default: 0] += seconds
+        return handleFocusProgress(sessionId: sessionId)
+    }
+
     private func handleFocusProgress(sessionId: String) -> Double {
         guard let activeSeconds = sessionActiveSeconds[sessionId] else { return 0 }
         var granted = 0.0
 
-        // Focus is based on credited tool activity, not SessionStart. This keeps
-        // CLIs that omit lifecycle hooks from being permanently stuck at zero.
-        if activeSeconds >= 600 && sessionFocusThresholdFired[sessionId] != true {
+        // Focus follows credited active prompt time. Tool events only force
+        // sampling; long thinking/model waits should still count as focused work.
+        if activeSeconds >= focusThresholdSeconds && sessionFocusThresholdFired[sessionId] != true {
             sessionFocusThresholdFired[sessionId] = true
-            granted += grantFocus(4)
+            granted += grantFocus(focusThresholdReward)
         }
 
         let lastRewardAt = sessionLastFocusActiveSeconds[sessionId] ?? 0
-        let currentRewardAt = (activeSeconds / 300) * 300
+        let currentRewardAt = (activeSeconds / focusRewardIntervalSeconds) * focusRewardIntervalSeconds
         if currentRewardAt > lastRewardAt {
-            let rewardCount = (currentRewardAt - lastRewardAt) / 300
-            granted += grantFocus(Double(rewardCount * 2))
+            let rewardCount = (currentRewardAt - lastRewardAt) / focusRewardIntervalSeconds
+            granted += grantFocus(Double(rewardCount) * focusRewardPerInterval)
             sessionLastFocusActiveSeconds[sessionId] = currentRewardAt
         }
         return granted
@@ -1492,6 +1503,7 @@ public final class CharacterEngine {
         // and Gemini-class CLIs) accrue tools but zero active seconds and
         // produce meal=0 forever.
         sessionMealActiveSeconds[sessionId, default: 0] += seconds
+        _ = creditFocusActiveSeconds(sessionId: sessionId, seconds: seconds)
         applyContinuousWorkHealthPenalty(sessionId: sessionId, addSeconds: seconds)
         promptLastSampleTimes[sessionId] = lastSample.addingTimeInterval(TimeInterval(seconds))
         return true

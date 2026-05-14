@@ -26,7 +26,7 @@ final class CodexUsageLoaderTests: XCTestCase {
         XCTAssertEqual(monitor.snapshot, first)
     }
 
-    func testLoadPrefersClosestDateDirectoryOverNewerModifiedAtInOlderDirectory() throws {
+    func testLoadPrefersNewestModifiedFileAcrossDateDirectories() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-usage-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
@@ -46,8 +46,32 @@ final class CodexUsageLoaderTests: XCTestCase {
 
         let snapshot = try XCTUnwrap(CodexUsageLoader.load(fromRootURL: tempDir))
 
-        XCTAssertEqual(canonicalPath(snapshot.sourceFilePath), canonicalPath(today.path))
-        XCTAssertEqual(snapshot.windows.first?.usedPercentage, 11)
+        XCTAssertEqual(canonicalPath(snapshot.sourceFilePath), canonicalPath(yesterday.path))
+        XCTAssertEqual(snapshot.windows.first?.usedPercentage, 77)
+    }
+
+    func testLoadFindsRecentlyModifiedFileInOlderDateDirectory() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-usage-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let todayDir = dateDirectory(for: Date(), under: tempDir)
+        let olderDir = dateDirectory(for: dateByAddingDays(-8), under: tempDir)
+        try FileManager.default.createDirectory(at: todayDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: olderDir, withIntermediateDirectories: true)
+
+        let today = todayDir.appendingPathComponent("rollout-today.jsonl")
+        let older = olderDir.appendingPathComponent("rollout-older-active.jsonl")
+        try validTokenCountLine(usedPercent: 12).write(to: today, atomically: true, encoding: .utf8)
+        try validTokenCountLine(usedPercent: 88).write(to: older, atomically: true, encoding: .utf8)
+
+        try setModifiedAt(Date().addingTimeInterval(-120), for: today)
+        try setModifiedAt(Date(), for: older)
+
+        let snapshot = try XCTUnwrap(CodexUsageLoader.load(fromRootURL: tempDir))
+
+        XCTAssertEqual(canonicalPath(snapshot.sourceFilePath), canonicalPath(older.path))
+        XCTAssertEqual(snapshot.windows.first?.usedPercentage, 88)
     }
 
     func testLoadFallsBackWhenNewestRolloutHasNoTokenCount() throws {

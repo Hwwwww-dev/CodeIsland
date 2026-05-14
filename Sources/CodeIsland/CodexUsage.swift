@@ -2,7 +2,7 @@
 //  CodexUsage.swift
 //  CodeIsland
 //
-//  Reads Codex rate-limit / usage data from the newest recent
+//  Reads Codex rate-limit / usage data from the most recently updated
 //  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl file.
 //  Ported from MioIsland.
 //
@@ -110,32 +110,13 @@ enum CodexUsageLoader {
         let now = Date()
         let cutoff = now.addingTimeInterval(-Self.candidateMaxAge)
 
-        for dayURL in recentDateDirectoryURLs(rootURL: rootURL, now: now) {
-            for candidate in candidates(in: dayURL, cutoff: cutoff, fileManager: fileManager) {
-                if let snapshot = loadLatestSnapshot(from: candidate.fileURL, modifiedAt: candidate.modifiedAt) {
-                    return snapshot
-                }
+        for candidate in candidates(inRootURL: rootURL, cutoff: cutoff, fileManager: fileManager) {
+            if let snapshot = loadLatestSnapshot(from: candidate.fileURL, modifiedAt: candidate.modifiedAt) {
+                return snapshot
             }
         }
 
         return nil
-    }
-
-    private static func recentDateDirectoryURLs(rootURL: URL, now: Date = Date()) -> [URL] {
-        let calendar = Calendar(identifier: .gregorian)
-
-        return (0..<7).compactMap { offset in
-            guard let date = calendar.date(byAdding: .day, value: -offset, to: now) else { return nil }
-            let components = calendar.dateComponents([.year, .month, .day], from: date)
-            guard let year = components.year,
-                  let month = components.month,
-                  let day = components.day else { return nil }
-
-            return rootURL
-                .appendingPathComponent(String(format: "%04d", year), isDirectory: true)
-                .appendingPathComponent(String(format: "%02d", month), isDirectory: true)
-                .appendingPathComponent(String(format: "%02d", day), isDirectory: true)
-        }
     }
 
     private static func isNewer(_ lhs: Candidate, than rhs: Candidate) -> Bool {
@@ -145,32 +126,69 @@ enum CodexUsageLoader {
         return lhs.modifiedAt > rhs.modifiedAt
     }
 
-    private static func candidates(
-        in dayURL: URL,
-        cutoff: Date,
-        fileManager: FileManager
-    ) -> [Candidate] {
-        guard let fileURLs = try? fileManager.contentsOfDirectory(
-            at: dayURL,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-
+    private static func candidates(inRootURL rootURL: URL, cutoff: Date, fileManager: FileManager) -> [Candidate] {
         var candidates: [Candidate] = []
-        for fileURL in fileURLs {
-            guard fileURL.lastPathComponent.hasPrefix("rollout-"),
-                  fileURL.pathExtension == "jsonl",
-                  let resourceValues = try? fileURL.resourceValues(
-                    forKeys: [.contentModificationDateKey, .isRegularFileKey]
-                  ),
-                  resourceValues.isRegularFile == true,
-                  let modifiedAt = resourceValues.contentModificationDate,
-                  modifiedAt >= cutoff else { continue }
+        for dayURL in dateDirectoryURLs(rootURL: rootURL, fileManager: fileManager) {
+            guard let fileURLs = try? fileManager.contentsOfDirectory(
+                at: dayURL,
+                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
 
-            candidates.append(Candidate(fileURL: fileURL, modifiedAt: modifiedAt))
+            for fileURL in fileURLs {
+                guard fileURL.lastPathComponent.hasPrefix("rollout-"),
+                      fileURL.pathExtension == "jsonl",
+                      let resourceValues = try? fileURL.resourceValues(
+                        forKeys: [.contentModificationDateKey, .isRegularFileKey]
+                      ),
+                      resourceValues.isRegularFile == true,
+                      let modifiedAt = resourceValues.contentModificationDate,
+                      modifiedAt >= cutoff else { continue }
+
+                candidates.append(Candidate(fileURL: fileURL, modifiedAt: modifiedAt))
+            }
         }
 
         return candidates.sorted { isNewer($0, than: $1) }
+    }
+
+    private static func dateDirectoryURLs(rootURL: URL, fileManager: FileManager) -> [URL] {
+        var dayURLs: [URL] = []
+        for yearURL in directoryURLs(at: rootURL, fileManager: fileManager)
+            where isDecimalComponent(yearURL.lastPathComponent, digitCount: 4) {
+            for monthURL in directoryURLs(at: yearURL, fileManager: fileManager)
+                where isDecimalComponent(monthURL.lastPathComponent, digitCount: 2) {
+                for dayURL in directoryURLs(at: monthURL, fileManager: fileManager)
+                    where isDecimalComponent(dayURL.lastPathComponent, digitCount: 2) {
+                    dayURLs.append(dayURL)
+                }
+            }
+        }
+        return dayURLs
+    }
+
+    private static func directoryURLs(at url: URL, fileManager: FileManager) -> [URL] {
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        return urls.filter { url in
+            (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
+    }
+
+    private static func isDecimalComponent(_ value: String, digitCount: Int) -> Bool {
+        let utf8 = value.utf8
+        return utf8.count == digitCount && utf8.allSatisfy { byte in
+            byte >= CharacterCodes.zero && byte <= CharacterCodes.nine
+        }
+    }
+
+    private enum CharacterCodes {
+        static let zero = UInt8(ascii: "0")
+        static let nine = UInt8(ascii: "9")
     }
 
     private static func loadLatestSnapshot(from fileURL: URL, modifiedAt: Date) -> CodexUsageSnapshot? {

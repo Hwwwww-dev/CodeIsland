@@ -920,7 +920,7 @@ final class CharacterEngineTests: XCTestCase {
     }
 
     @MainActor
-    func testEvent_focusUsesToolActivityWithoutSessionStart() throws {
+    func testEvent_focusUsesFallbackActiveTimeWithoutSessionStart() throws {
         var stats = CharacterStats()
         stats.cyber.focus = 0
         var now = Date(timeIntervalSince1970: 1_700_000_000)
@@ -943,8 +943,8 @@ final class CharacterEngineTests: XCTestCase {
             now = now.addingTimeInterval(120)
         }
 
-        // 30 + 5×120 = 630 active seconds. 600s threshold → +4. 630/300=2 bands → +4. Total = 8.
-        XCTAssertEqual(engine.characterStats.cyber.focus, 8, accuracy: 0.001)
+        // 600 active seconds. 600s threshold → +20. Two 5-minute bands → +6. Total = 26.
+        XCTAssertEqual(engine.characterStats.cyber.focus, 26, accuracy: 0.001)
     }
 
     func testEvent_taste_incrementedByHighSuccessSession() {
@@ -1011,6 +1011,25 @@ final class CharacterEngineTests: XCTestCase {
 
         XCTAssertEqual(engine.characterStats.stats.totalActiveSeconds, 180)
         XCTAssertEqual(engine.characterStats.stats.currentDayActiveSeconds, 180)
+    }
+
+    @MainActor
+    func testFocus_activePromptTimeAccumulatesWithoutTools() throws {
+        var stats = CharacterStats()
+        var now = Date(timeIntervalSince1970: 1_700_000_000)
+        stats.lastTickedAt = now
+        let engine = CharacterEngine.makeForTesting(stats: stats, now: { now })
+        let sid = "focus-active-time"
+
+        engine.handle(event: try makeHookEvent([
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": sid,
+        ]), sessionContext: nil)
+
+        now = now.addingTimeInterval(600)
+        engine.sampleActivePromptTime(runningSessionIds: [sid], now: now)
+
+        XCTAssertEqual(engine.characterStats.cyber.focus, 26, accuracy: 0.001)
     }
 
     @MainActor
@@ -1646,8 +1665,7 @@ final class CharacterEngineTests: XCTestCase {
 
     @MainActor
     func testFocus_singleSession_allowsRewardAboveFifty() throws {
-        // 8000s preloaded + first PostToolUse delta 30s = 8030s.
-        // Threshold bonus +4, floor(8030/300)=26 bands → +52. Total = 56.
+        // 8000s preloaded: threshold bonus +20, floor(8000/300)=26 bands → +78.
         let engine = CharacterEngine.makeForTesting()
         engine.testInject_sessionFocusActiveSeconds(sessionId: "cap1", seconds: 8000)
         // Trigger focus evaluation via a PostToolUse event.
@@ -1656,12 +1674,12 @@ final class CharacterEngineTests: XCTestCase {
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evt, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 56, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 98, accuracy: 0.001)
     }
 
     @MainActor
     func testFocus_separateSessions_eachAccumulateFullReward() throws {
-        // Two separate sessions each earn the full 56-point reward.
+        // Two separate sessions each earn the full reward.
         let engine = CharacterEngine.makeForTesting()
 
         engine.testInject_sessionFocusActiveSeconds(sessionId: "sA", seconds: 8000)
@@ -1670,7 +1688,7 @@ final class CharacterEngineTests: XCTestCase {
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evtA, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 56, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 98, accuracy: 0.001)
 
         engine.testInject_sessionFocusActiveSeconds(sessionId: "sB", seconds: 8000)
         let evtB = try makeHookEvent([
@@ -1678,12 +1696,12 @@ final class CharacterEngineTests: XCTestCase {
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evtB, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 112, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 196, accuracy: 0.001)
     }
 
     @MainActor
     func testFocus_sessionCleanup_resetsProgressTracking() throws {
-        // Session A earns 56, then ends. Same session id starts fresh and can earn 56 again.
+        // Session A earns focus, then ends. Same session id starts fresh and can earn again.
         let engine = CharacterEngine.makeForTesting()
 
         engine.testInject_sessionFocusActiveSeconds(sessionId: "reuse", seconds: 8000)
@@ -1692,7 +1710,7 @@ final class CharacterEngineTests: XCTestCase {
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evtA, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 56, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 98, accuracy: 0.001)
 
         // End session — clears per-session focus tracking.
         engine.endSession(sessionId: "reuse")
@@ -1704,7 +1722,7 @@ final class CharacterEngineTests: XCTestCase {
             "tool_name": "Read", "success": true,
         ])
         engine.handle(event: evtB, sessionContext: nil)
-        XCTAssertEqual(engine.characterStats.cyber.focus, 112, accuracy: 0.001)
+        XCTAssertEqual(engine.characterStats.cyber.focus, 196, accuracy: 0.001)
     }
 
     // MARK: - Vital Coupling
